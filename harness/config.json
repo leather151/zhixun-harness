@@ -1,0 +1,24 @@
+{
+  "_说明": "策略阈值与硬性预算上限。阈值来自 03_实验/数据分析 的漂移标定（A 包 b01→b02：KS 中位数 0.283、|z| 中位数 0.544）。",
+  "policy": {
+    "ks_median_trigger": 0.25,
+    "abs_z_median_trigger": 0.50,
+    "metric_drop_trigger": 0.02,
+    "metric_rise_trigger": 0.05,
+    "escalate_after": 2
+  },
+  "caps": {
+    "max_updates": 4,
+    "max_epochs": 8,
+    "max_seconds": 600.0,
+    "max_windows": 12
+  },
+  "gate": {
+    "margin": 0.0
+  },
+  "finetune": {
+    "learning_rate": 0.0005,
+    "epochs_light": 1,
+    "epochs_heavy": 3
+  }
+}

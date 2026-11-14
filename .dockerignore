@@ -1,0 +1,11 @@
+# 只把真正要进镜像的东西送进构建上下文
+.idea/
+runs/
+results/
+src/
+__pycache__/
+*.pyc
+*.joblib
+data/raw/
+dist/
+harness/__pycache__/

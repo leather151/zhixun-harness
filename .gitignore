@@ -1,0 +1,16 @@
+# ---- 构建产物（体积大，不入库）----
+dist/
+runs/
+results/
+*.tar
+
+# ---- 数据：官方数据由主办方分发，不入库（见 README「数据准备」）----
+data/public/
+data/raw/
+
+# ---- Python / IDE ----
+__pycache__/
+*.py[cod]
+.idea/
+src/swanlog/
+*.joblib
