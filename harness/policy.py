@@ -137,6 +137,56 @@ def _parse_action(text):
 
 
 def build(kind, cfg, endpoint=None, model=None, api_key=None):
+    """构造决策器。
+
+    kind = "auto"（默认）时按环境变量自动探测 Sampler/LLM 的接入信息：
+    找到 endpoint 就用 LLMPolicy（失败自动回落规则版），找不到就用 RulePolicy。
+    这样平台无论是否注入大模型接入信息，容器都能跑完——这是"无人干预跑完"的必要条件。
+    """
+    detected = None
+    if kind == "auto":
+        detected = detect_from_env()
+        kind = "llm" if detected else "rule"
+        if detected:
+            endpoint, model, api_key = detected["endpoint"], detected["model"], detected["api_key"]
     if kind == "llm" and endpoint:
-        return LLMPolicy(endpoint, model or "qwen", api_key=api_key, cfg=cfg)
+        pol = LLMPolicy(endpoint, model or "qwen", api_key=api_key, cfg=cfg)
+        if detected:
+            pol.detected_env = detected["source"]
+        return pol
     return RulePolicy(cfg)
+
+
+# 平台可能用这些环境变量注入"驱动 Harness 的大模型"接入信息（按优先级尝试）
+_ENV_PAIRS = (
+    ("SAMPLER_ENDPOINT", "SAMPLER_MODEL", "SAMPLER_API_KEY"),
+    ("HARNESS_LLM_ENDPOINT", "HARNESS_LLM_MODEL", "HARNESS_LLM_KEY"),
+    ("PYTRIO_BASE_URL", "PYTRIO_MODEL", "PYTRIO_API_KEY"),
+    ("OPENAI_BASE_URL", "OPENAI_MODEL", "OPENAI_API_KEY"),
+    ("LLM_BASE_URL", "LLM_MODEL", "LLM_API_KEY"),
+)
+
+
+def detect_from_env(environ=None):
+    """探测大模型接入信息；找不到返回 None。"""
+    import os
+    env = environ if environ is not None else os.environ
+
+    def first(*names):
+        for n in names:
+            v = env.get(n)
+            if v and v.strip():
+                return v.strip()
+        return None
+
+    for ep_key, model_key, key_key in _ENV_PAIRS:
+        endpoint = first(ep_key)
+        if not endpoint:
+            continue
+        return {
+            "endpoint": endpoint,
+            "model": first(model_key) or first("MODEL_NAME") or "qwen",
+            "api_key": first(key_key),
+            "source": ep_key,
+        }
+    return None

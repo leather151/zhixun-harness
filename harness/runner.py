@@ -276,6 +276,8 @@ def run(task, args, cfg):
         "stream_mode": mode,
         "stream_note": stream["note"],
         "policy": args.policy,
+        "policy_impl": getattr(args._policy, "name", "?"),
+        "policy_detected_env": getattr(args._policy, "detected_env", None),
         "windows": len(window_metrics),
         "primary": primary,
         "metric_first": window_metrics[0] if window_metrics else None,
@@ -359,7 +361,8 @@ def parse(argv=None):
     ap.add_argument("--stream", default="official", choices=["official", "train", "auto"],
                     help="official=官方验证集只测不改；train=train 内部切分（可更新）；auto=按数据自动选")
     ap.add_argument("--windows", type=int, default=4, help="把数据流切成几个窗口")
-    ap.add_argument("--policy", default="rule", choices=["rule", "llm"])
+    ap.add_argument("--policy", default="auto", choices=["auto", "rule", "llm"],
+                    help="auto=有 LLM 接入就用 LLM（失败回落规则），没有就用规则；rule=纯规则；llm=强制 LLM")
     ap.add_argument("--llm-endpoint", default=None)
     ap.add_argument("--llm-model", default=None)
     ap.add_argument("--llm-key", default=None)
