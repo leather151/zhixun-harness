@@ -153,15 +153,21 @@ def load_jsonl(path, classes=None):
     }
 
 
-def write_buffer(path, *parts):
-    """把若干行片段写成 train_run 需要的 jsonl（顺序即权重的先后顺序）。"""
+def write_buffer(path, *parts, table=None):
+    """把若干行片段写成 train_run 需要的 jsonl。
+
+    `table` 非空时，把每行的输入就地换成秩特征——因为模型的标准化参数是在秩特征上拟合的，
+    续训必须喂同样语义的输入，否则等于用错尺子。
+    """
+    import preprocess
     seen, lines = set(), []
     for part in parts:
         for line, ident in zip(part["raw"], part["ids"]):
             if ident in seen:
                 continue
             seen.add(ident)
-            lines.append(line)
+            lines.append(line if table is None else
+                         preprocess.transform_jsonl_line(line, table))
     Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
     return len(lines)
 
@@ -271,7 +277,7 @@ def build_stream(task, mode, windows, data_root=None):
 # ------------------------------------------------------------------ 指标
 
 def evaluate(spec, model, rows, paths_names=None):
-    pred_raw = model.predict(rows["x"])
+    pred_raw = model.predict(model_inputs(model, rows["x"]))
     if spec["kind"] == "classification":
         pred = np.asarray(pred_raw).argmax(1)
         metrics_ = {
@@ -327,8 +333,30 @@ def load_vendor(task, need_train=False):
     return out
 
 
-def checkpoint_path(task, name="checkpoint.npz"):
-    return MODEL_ROOT / task / name
+def checkpoint_path(task, name=None):
+    """默认起点/交付模型：优先用优化后的检查点，其次是官方起点。
+
+    优先级：checkpoint_best.npz → checkpoint_rank.npz（含秩分位表的改进版）→ checkpoint.npz（官方起点）
+    """
+    root = MODEL_ROOT / task
+    if name:
+        return root / name
+    for candidate in ("checkpoint_best.npz", "checkpoint_rank.npz", "checkpoint.npz"):
+        if (root / candidate).exists():
+            return root / candidate
+    return root / "checkpoint.npz"
+
+
+def model_table(model):
+    """取模型自带的预处理分位表（没有则 None）。"""
+    import preprocess
+    return preprocess.table_from_meta(model.meta)
+
+
+def model_inputs(model, x):
+    """按模型自带预处理变换输入（秩变换模型必须先变换，否则等于喂错数据）。"""
+    import preprocess
+    return preprocess.transform_inputs(model.meta, x)
 
 
 def load_model(task, path):

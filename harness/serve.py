@@ -55,6 +55,15 @@ class Server:
         self.model_root = Path(model_root) if model_root else T.MODEL_ROOT
         self._models = {}
 
+    def _resolve(self, task):
+        """按与 harness 一致的优先级挑检查点（优化版优先，官方起点兜底）。"""
+        root = self.model_root / task
+        for name in ("checkpoint_best.npz", "checkpoint_rank.npz", "checkpoint.npz"):
+            path = root / name
+            if path.exists():
+                return path
+        raise FileNotFoundError(f"缺少模型：{root}/checkpoint*.npz")
+
     def model(self, task):
         if task not in self._models:
             import importlib
@@ -62,9 +71,7 @@ class Server:
             if str(vdir) not in sys.path:
                 sys.path.insert(0, str(vdir))
             mod = importlib.import_module("model")
-            ckpt = self.model_root / task / "checkpoint.npz"
-            if not ckpt.exists():
-                raise FileNotFoundError(f"缺少模型：{ckpt}")
+            ckpt = self._resolve(task)
             self._models[task] = mod.Model.load(ckpt)
         return self._models[task]
 
@@ -77,7 +84,7 @@ class Server:
         model = self.model(task)
         if paths != model.meta["paths"]:
             raise ValueError(f"特征 schema 与检查点不一致（识别为 {task} 包）")
-        out = model.predict(np.asarray([values], dtype=np.float64))[0]
+        out = model.predict(T.model_inputs(model, np.asarray([values], dtype=np.float64)))[0]
         if model.meta["task"] == "regression":
             return {"outputs": {"value": float(out)}}
         return {"outputs": [{"label": label, "score": float(score)}

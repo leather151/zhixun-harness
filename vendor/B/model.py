@@ -95,12 +95,27 @@ class Model:
         hidden = np.tanh(x @ self.params["w1"] + self.params["b1"])
         return hidden, hidden @ self.params["w2"] + self.params["b2"]
 
-    def fit(self, x, y, epochs):
+    def fit(self, x, y, epochs, sample_weight=None, weight_decay=0.0):
         if type(epochs) is not int or not 1 <= epochs <= 10000:
             raise ValueError("epochs must be between 1 and 10000")
         x = self.normalized(x)
         if y.shape != (len(x),) or not len(x):
             raise ValueError("target shape mismatch")
+        # 权重衰减（本项目新增；weight_decay=0 时与官方实现逐位一致）。
+        # 只用 L2 作用于 w1/w2（不动偏置），对应"把模型往 0 拉"，等价于强正则。
+        decay = float(weight_decay)
+        if decay < 0 or not math.isfinite(decay):
+            raise ValueError("invalid weight_decay")
+        # 逐样本权重（本项目新增；sample_weight=None 时与官方实现逐位一致）：
+        # 用于"按轴承等权"这类数据平衡，只作用于训练损失，不进模型输入。
+        weights = None
+        if sample_weight is not None:
+            weights = np.asarray(sample_weight, dtype=np.float64)
+            if weights.shape != (len(x),) or not np.all(np.isfinite(weights)) or np.any(weights < 0):
+                raise ValueError("invalid sample_weight")
+            if float(weights.sum()) <= 0:
+                raise ValueError("sample_weight must not be all zero")
+            weights = weights / float(weights.mean())      # 归一到均值 1，学习率语义不变
         if self.meta["task"] == "regression":
             target = (y - self.meta["target_mean"]) / self.meta["target_scale"]
         else:
@@ -116,6 +131,7 @@ class Model:
             for start in range(0, len(order), self.meta["batch_size"]):
                 indices = order[start:start + self.meta["batch_size"]]
                 batch, expected = x[indices], target[indices]
+                batch_w = weights[indices] if weights is not None else None
                 hidden, logits = self.forward(batch)
                 if self.meta["task"] == "classification":
                     logits -= logits.max(axis=1, keepdims=True)
@@ -124,14 +140,25 @@ class Model:
                     loss_sum -= float(np.log(np.maximum(probabilities[np.arange(len(indices)), expected], 1e-300)).sum())
                     delta = probabilities
                     delta[np.arange(len(indices)), expected] -= 1
-                    delta /= len(indices)
+                    if batch_w is None:
+                        delta /= len(indices)
+                    else:
+                        delta *= batch_w[:, None]
+                        delta /= float(batch_w.sum())
                 else:
                     error = logits[:, 0] - expected
-                    loss_sum += float(np.sum(error ** 2))
-                    delta = (2 * error / len(indices))[:, None]
+                    if batch_w is None:
+                        loss_sum += float(np.sum(error ** 2))
+                        delta = (2 * error / len(indices))[:, None]
+                    else:
+                        loss_sum += float(np.sum((error ** 2) * batch_w))
+                        delta = (2 * error * batch_w / float(batch_w.sum()))[:, None]
                 gradients = {"w2": hidden.T @ delta, "b2": delta.sum(axis=0)}
                 hidden_delta = (delta @ self.params["w2"].T) * (1 - hidden ** 2)
                 gradients.update(w1=batch.T @ hidden_delta, b1=hidden_delta.sum(axis=0))
+                if decay:
+                    gradients["w1"] = gradients["w1"] + decay * self.params["w1"]
+                    gradients["w2"] = gradients["w2"] + decay * self.params["w2"]
                 norm = math.sqrt(sum(float(np.sum(g * g)) for g in gradients.values()))
                 if not math.isfinite(norm):
                     raise ValueError("nonfinite gradient")

@@ -191,7 +191,8 @@ def run(task, args, cfg):
             if epochs <= 0:
                 executed = {"action": action, "skipped": "epoch 预算用尽"}
             else:
-                T.write_buffer(buffer_path, history, *windows[:index + 1])
+                T.write_buffer(buffer_path, history, *windows[:index + 1],
+                               table=T.model_table(T.load_model(task, current)))
                 cand_dir = outdir / f"cand-w{index + 1}-{action}"
                 t0 = time.monotonic()
                 report, cand_path = T.fine_tune(
