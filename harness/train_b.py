@@ -146,7 +146,37 @@ def main(argv=None):
     ap.add_argument("--quick", action="store_true", help="只跑历史最优配置")
     ap.add_argument("--max-epochs", type=int, default=40)
     ap.add_argument("--init", default=str(T.MODEL_ROOT / "B" / "checkpoint.npz"))
+    ap.add_argument("--swan", default="auto", choices=["auto", "on", "off"],
+                    help="auto/on=记到 SwanLab 云端（拿 HTTPS 链接）；off=不记")
+    ap.add_argument("--swan-project", default=None)
     args = ap.parse_args(argv)
+
+    # ---------- 环境与实验记录初始化（先说清楚"用的谁、记不记得上"） ----------
+    import platform
+    print(f"解释器：{sys.executable}")
+    print(f"Python {platform.python_version()}  numpy {np.__version__}")
+    try:
+        import swanlab as _sw
+        print(f"swanlab {_sw.__version__}")
+    except Exception:                                          # noqa: BLE001
+        print("⚠ swanlab 未安装：只能记本地。PyCharm 里请把解释器选成 "
+              r"C:\ProgramData\anaconda2")
+    swan = {"run": None, "url": None, "error": None, "mode": None,
+            "project": None, "experiment": None}
+    if args.swan != "off":
+        import runlog as L
+        swan = L.open_swan(project=args.swan_project,
+                           experiment="B-bearing-train-improve",
+                           config={"task": "B", "recipe": "rank + per-bearing weight + weight_decay",
+                                   "hidden": HIDDEN, "lr": LR, "batch": BATCH,
+                                   "max_epochs": args.max_epochs,
+                                   "holdout_for_selection": list(HOLDOUT_BEARINGS)})
+        if swan["run"]:
+            print(f"SwanLab：{swan['project']} / {swan['experiment']}（{swan['mode']}）")
+            if swan["url"]:
+                print(f"记录链接：{swan['url']}")
+        else:
+            print(f"⚠ SwanLab 未启用（{swan['error']}）")
 
     base_dir = T.task_base("B")
     train = T.load_jsonl(base_dir / "train.jsonl")
@@ -214,6 +244,27 @@ def main(argv=None):
         print(f"  → validation: RMSE {fin['rmse']:.2f}  MAE {fin['mae']:.2f}  "
               f"Bias {fin['bias']:+.1f}  秩相关 {fin['spearman']:+.3f}\n")
 
+        # ---- 记到云端：每个候选一条曲线 + 一组验证指标 ----
+        if swan["run"] is not None:
+            tag = (name.replace("秩·等权·", "r").replace("原始·不加权·", "raw_")
+                       .replace("随机初始化·", "rand").replace("热启动·", "warm")
+                       .replace("（对照）", "").replace("wd=", "wd"))
+            try:
+                for point in info["curve"]:
+                    swan["run"].log({f"holdout_rmse/{tag}": point["holdout_rmse"]},
+                                    step=point["epoch"])
+                swan["run"].log({
+                    f"val_rmse/{tag}": fin["rmse"],
+                    f"val_mae/{tag}": fin["mae"],
+                    f"val_bias/{tag}": fin["bias"],
+                    f"val_spearman/{tag}": fin["spearman"],
+                    f"best_epoch/{tag}": info["best_epoch"],
+                    f"holdout_best/{tag}": info["holdout_rmse"],
+                    "candidate": len(searched),
+                }, step=args.max_epochs + len(searched))
+            except Exception as exc:                            # noqa: BLE001
+                print(f"  （云端记录失败：{type(exc).__name__}: {exc}）")
+
     # ---------- 选择：只按内部留出指标，对照不参与 ----------
     eligible = [i for i, s in enumerate(searched) if not s.get("control")]
     pick = min(eligible, key=lambda i: (searched[i]["holdout_rmse"], finals[i]["rmse"]))
@@ -272,6 +323,7 @@ def main(argv=None):
                             "per_bearing": best["per_bearing"]},
         "checkpoint": str(out),
         "checkpoint_sha256": "sha256:" + hashlib.sha256(out.read_bytes()).hexdigest(),
+        "swan": {k: v for k, v in swan.items() if k != "run"},
     }
     out_json = PROJECT / "runs" / "B_improve_report.json"
     out_json.parent.mkdir(parents=True, exist_ok=True)
@@ -284,6 +336,25 @@ def main(argv=None):
     for b, v in best["per_bearing"].items():
         print(f"  {b:12s} n={v['n']:5d}  RMSE {v['rmse']:7.1f}  MAE {v['mae']:7.1f}  "
               f"Bias {v['bias']:+8.1f}")
+
+    # ---- 收尾：记录最终结论并关掉 run（否则云端可能看不到最后几条） ----
+    if swan["run"] is not None:
+        try:
+            swan["run"].log({
+                "final/val_rmse": best["rmse"],
+                "final/val_mae": best["mae"],
+                "final/val_spearman": best["spearman"],
+                "final/epochs": best["epochs"],
+                "final/vs_official_pct": (best["rmse"] / 681.16 - 1) * 100,
+                "db/official_baseline_rmse": 681.16,
+                "db/constant_baseline_rmse": 470.9,
+                "db/ridge_rank_rmse": ridge_rank["rmse"],
+            })
+            swan["run"].finish()
+        except Exception:                                      # noqa: BLE001
+            pass
+        if swan["url"]:
+            print(f"\nSwanLab 记录：{swan['url']}")
     return report
 
 

@@ -129,3 +129,25 @@ def _swan_url(run):
     except Exception:                                             # noqa: BLE001
         pass
     return None
+
+
+def open_swan(project=None, experiment="harness", config=None, mode=None):
+    """独立于 RunLogger 的 SwanLab 入口（给 train_b.py 这类实验脚本用）。
+
+    返回 dict(run, url, project, experiment, mode, error)。
+    云端失败会退到 local，两者都失败则 run=None 并把原因带回来（不抛异常，不阻塞实验）。
+    """
+    proj = project or os.environ.get("SWANLAB_PROJECT") or "zhixun-engine-3tasks"
+    wanted = mode or os.environ.get("SWANLAB_MODE") or "cloud"
+    last_error = None
+    for attempt in (wanted, "local"):
+        try:
+            import swanlab
+            run = swanlab.init(project=proj, experiment_name=experiment,
+                               config=config or {}, mode=attempt)
+            return {"run": run, "url": _swan_url(run), "project": proj,
+                    "experiment": experiment, "mode": attempt, "error": None}
+        except Exception as exc:                                  # noqa: BLE001
+            last_error = f"{type(exc).__name__}: {exc}"
+    return {"run": None, "url": None, "project": proj, "experiment": experiment,
+            "mode": None, "error": last_error}
