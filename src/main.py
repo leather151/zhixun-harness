@@ -91,8 +91,8 @@ def main():
     data_sha256 = file_sha256(DATA_PATH)
 
     run = swanlab.init(
-        project="zhixun-engine",
-        experiment_name="gas-rf-baseline",
+        project="zhixun-engine-3tasks",
+        experiment_name="A-gas-rf-baseline",
         config={
             "task": "A",
             "task_type": "gas_sensor_classification",

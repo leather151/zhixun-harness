@@ -14,7 +14,8 @@ from pathlib import Path
 
 
 class RunLogger:
-    def __init__(self, outdir, swan="auto", experiment="harness", config=None):
+    def __init__(self, outdir, swan="auto", experiment="harness", config=None,
+                 project=None, mode=None):
         self.outdir = Path(outdir)
         self.outdir.mkdir(parents=True, exist_ok=True)
         self.windows_path = self.outdir / "windows.jsonl"
@@ -24,25 +25,39 @@ class RunLogger:
         self._decisions = self.decisions_path.open("a", encoding="utf-8")
         self.swan = None
         self.swan_error = None
-        want = (swan == "on") or (swan == "auto")
-        if want and os.environ.get("SWANLAB_MODE", "local") != "disabled":
+        self.swan_url = None
+        self.swan_project = project or os.environ.get("SWANLAB_PROJECT") or "zhixun-engine-3tasks"
+        self.swan_experiment = experiment
+        if swan == "off" or (swan == "auto" and os.environ.get("SWANLAB_MODE") == "disabled"):
+            return
+        wanted = mode or os.environ.get("SWANLAB_MODE") or "cloud"
+        for attempt in (wanted, "local"):
             try:
                 import swanlab
-                self.swan = swanlab.init(project="zhixun-engine", experiment_name=experiment,
-                                        config=config or {},
-                                        mode=os.environ.get("SWANLAB_MODE", "local"))
+                self.swan = swanlab.init(project=self.swan_project, experiment_name=experiment,
+                                        config=config or {}, mode=attempt)
+                self.swan_url = _swan_url(self.swan)
+                self.swan_mode = attempt
+                break
             except Exception as exc:                              # noqa: BLE001
                 self.swan_error = f"{type(exc).__name__}: {exc}"
+                self.swan = None
 
     # ---------------------------------------------------------------- 写
-    def log_window(self, payload):
+    def log_window(self, payload, metrics=None):
         self._write(self._windows, payload)
-        if self.swan is not None:
+        if self.swan is None:
+            return
+        step = payload.get("window_index", 0)
+        values = metrics if metrics is not None else {
+            k: v for k, v in payload.items()
+            if isinstance(v, (int, float)) and not isinstance(v, bool)}
+        values = {k: v for k, v in values.items()
+                  if isinstance(v, (int, float)) and not isinstance(v, bool)}
+        values["window"] = step
+        if values:
             try:
-                flat = {f"w_{k}": v for k, v in payload.items()
-                        if isinstance(v, (int, float)) and not isinstance(v, bool)}
-                flat["window"] = payload.get("window_index", 0)
-                self.swan.log(flat, step=payload.get("window_index", 0))
+                self.swan.log(values, step=step)
             except Exception:                                     # noqa: BLE001
                 pass
 
@@ -97,3 +112,20 @@ def _default(obj):
 
 def stamp():
     return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+
+
+def _swan_url(run):
+    """尽量取出云端运行页 URL（不同 swanlab 版本字段不一样）。"""
+    for attr in ("url", "run_url", "cloud_url"):
+        value = getattr(run, attr, None)
+        if isinstance(value, str) and value.startswith("http"):
+            return value
+    try:
+        settings = getattr(run, "settings", None) or getattr(run, "_settings", None)
+        for attr in ("url", "cloud_url"):
+            value = getattr(settings, attr, None)
+            if isinstance(value, str) and value.startswith("http"):
+                return value
+    except Exception:                                             # noqa: BLE001
+        pass
+    return None

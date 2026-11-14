@@ -34,6 +34,8 @@ import runlog as L           # noqa: E402
 import tasks as T            # noqa: E402
 
 PRIMARY_NAME = {"macro_f1": "Macro-F1", "rmse": "RMSE"}
+# 数据集短名：SwanLab 的实验名要一眼看出是哪个数据集（不是一个 gas 项目里混着跑）
+DATASET_TAG = {"A": "gas", "B": "bearing", "C": "cmapss"}
 
 
 # ------------------------------------------------------------------ 工具
@@ -73,10 +75,12 @@ def run(task, args, cfg):
 
     outdir = Path(args.out) / f"{task}-{mode}-{L.stamp()}"
     logger = L.RunLogger(outdir, swan=args.swan,
-                         experiment=f"{task}-{mode}-{args.policy}",
-                         config={"task": task, "stream": mode, "policy": args.policy,
-                                 "windows": len(windows), "primary": primary,
-                                 "caps": cfg["caps"], "policy_cfg": cfg["policy"]})
+                         experiment=f"{task}-{DATASET_TAG[task]}-{mode}-{args.policy}",
+                         project=args.swan_project, mode=args.swan_mode,
+                         config={"task": task, "dataset": DATASET_TAG[task], "stream": mode,
+                                 "policy": args.policy, "windows": len(windows),
+                                 "primary": primary, "caps": cfg["caps"],
+                                 "policy_cfg": cfg["policy"]})
 
     start_ckpt = Path(args.checkpoint) if args.checkpoint else T.checkpoint_path(task)
     if not start_ckpt.exists():
@@ -233,7 +237,17 @@ def run(task, args, cfg):
             "updates_used": updates_used,
             "epochs_used": epochs_used,
         }
-        logger.log_window(payload)
+        logger.log_window(payload, metrics={
+            **ev["metrics"],
+            "drift_ks_median": drift["ks_median"],
+            "drift_abs_z_median": drift["abs_z_median"],
+            "drift_features_over_0_2": drift["ks_over_0_2"],
+            "updates_used": updates_used,
+            "epochs_used": epochs_used,
+            "training_seconds": round(training_seconds, 3),
+            "promoted": int(bool(gate and gate["promoted"])),
+            "rows": int(len(window["y"])),
+        })
         previous.append(value)
         print(f"[{task}] w{index + 1}/{len(windows)}  {primary}={fmt_metric(primary, value)}  "
               f"(ref {fmt_metric(primary, ref_value)})  drift ks_med={drift['ks_median']:.3f} "
@@ -297,7 +311,9 @@ def run(task, args, cfg):
         "artifact_sha256": manifest["sha256"],
         "caps": caps,
         "events": events,
-        "swan": {"enabled": logger.swan is not None, "error": logger.swan_error},
+        "swan": {"enabled": logger.swan is not None, "error": logger.swan_error,
+                 "project": logger.swan_project, "experiment": logger.swan_experiment,
+                 "mode": getattr(logger, "swan_mode", None), "url": logger.swan_url},
         "cost_per_point": None,
     }
     if len(window_metrics) > 1 and updates_used:
@@ -313,6 +329,12 @@ def run(task, args, cfg):
     print(f"  指标序列 {primary}: {', '.join(fmt_metric(primary, v) for v in window_metrics)}")
     print(f"  上线 {summary['promotions']} 次 / 回滚 {summary['rollbacks']} 次 / "
           f"训练 {training_seconds:.2f} s / {epochs_used} epoch")
+    swan = summary["swan"]
+    if swan["enabled"]:
+        print(f"  SwanLab：{swan['project']} / {swan['experiment']}（{swan['mode']}）"
+              + (f"\n  记录链接：{swan['url']}" if swan["url"] else "\n  （未取到 URL，登录后可 swanlab 网页查看）"))
+    else:
+        print(f"  SwanLab：未记录（{swan['error'] or '已关闭'}）")
     return summary
 
 
@@ -370,6 +392,10 @@ def parse(argv=None):
     ap.add_argument("--data-root", default=None, help="官方数据根目录（含 A_气体传感器/...）")
     ap.add_argument("--out", default=str(HERE.parent / "runs"))
     ap.add_argument("--swan", default="auto", choices=["auto", "on", "off"])
+    ap.add_argument("--swan-project", default=None,
+                    help="SwanLab 项目名（默认 zhixun-engine-3tasks，可用 SWANLAB_PROJECT 覆盖）")
+    ap.add_argument("--swan-mode", default=None, choices=["cloud", "local", "disabled"],
+                    help="默认 cloud（要拿 HTTPS 记录链接）；容器内用 off")
     ap.add_argument("--config", default=str(HERE / "config.json"))
     return ap.parse_args(argv)
 
