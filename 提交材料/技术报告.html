@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>智训引擎 · 工业模型自进化系统 技术报告</title>
+<style>
+  @page { size: A4; margin: 16mm 14mm 14mm 14mm; }
+  body { font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
+         font-size: 10.2pt; line-height: 1.5; color: #1f2937; margin: 0; }
+  h1 { font-size: 19pt; margin: 0 0 4px 0; color: #111827; }
+  h2 { font-size: 13pt; margin: 16px 0 6px; padding-bottom: 3px;
+       border-bottom: 1.6px solid #2563eb; color: #1e3a8a; page-break-after: avoid; }
+  h3 { font-size: 11pt; margin: 11px 0 4px; color: #1f2937; page-break-after: avoid; }
+  p { margin: 5px 0; }
+  ul, ol { margin: 4px 0 6px 18px; padding: 0; }
+  li { margin: 2px 0; }
+  table { border-collapse: collapse; width: 100%; margin: 7px 0; font-size: 9.2pt; }
+  th, td { border: 1px solid #d1d5db; padding: 3.5px 5px; text-align: left; vertical-align: top; }
+  th { background: #f3f4f6; font-weight: 600; }
+  .sub { color: #6b7280; font-size: 9.5pt; margin-bottom: 10px; }
+  .kpi { display: flex; gap: 10px; margin: 10px 0; }
+  .kpi div { flex: 1; border: 1px solid #dbeafe; background: #f8fafc; border-radius: 5px;
+             padding: 7px 9px; }
+  .kpi b { display: block; font-size: 15pt; color: #1d4ed8; line-height: 1.2; }
+  .kpi span { font-size: 8.8pt; color: #6b7280; }
+  .ok { color: #047857; font-weight: 600; }
+  .no { color: #b91c1c; font-weight: 600; }
+  .box { border-left: 3px solid #2563eb; background: #f8fafc; padding: 6px 10px; margin: 8px 0; }
+  .warn { border-left: 3px solid #d97706; background: #fffbeb; padding: 6px 10px; margin: 8px 0; }
+  code { background: #f1f5f9; padding: 1px 4px; border-radius: 3px; font-size: 9pt; }
+  .pb { page-break-before: always; }
+  footer { margin-top: 14px; border-top: 1px solid #e5e7eb; padding-top: 6px;
+           font-size: 8.5pt; color: #9ca3af; }
+</style>
+</head>
+<body>
+
+<h1>智训引擎：工业模型自进化系统</h1>
+<div class="sub">
+第二届北京市大学生“人工智能+”创新大赛 · 九、智训引擎——工业制造场景下的模型训练与超参数优化<br>
+交付物：自进化闭环系统（Harness）+ 三套优化后的工业模型 + 完整实验记录
+</div>
+
+<h2>1. 结果总览</h2>
+
+<div class="kpi">
+  <div><b>−45.8%</b><span>B 轴承 RUL：RMSE 681.16 → 369.47 分钟</span></div>
+  <div><b>−45%</b><span>C 涡扇 RUL：NASA 非对称分 5.82e9 → 3.20e9</span></div>
+  <div><b>+1.8%</b><span>A 气体六分类：Macro-F1 0.7140 → 0.7268</span></div>
+  <div><b>11</b><span>闭环窗口实测（3 包 × 2 模式）</span></div>
+</div>
+
+<table>
+  <tr><th>任务</th><th>主指标</th><th>官方基线</th><th>本方案</th><th>变化</th><th>关键手段</th></tr>
+  <tr><td>A 气体六分类</td><td>Macro-F1 ↑</td><td>0.7140</td><td><b>0.7268</b></td><td>+1.8%（噪声内）</td><td>类别加权 + 早停</td></tr>
+  <tr><td>B 滚动轴承 RUL</td><td>RMSE ↓（分钟）</td><td>681.16</td><td><b>369.47</b></td><td class="ok">−45.8%</td><td>秩变换 + 按轴承等权 + 强正则</td></tr>
+  <tr><td>C 涡扇 RUL</td><td>RMSE ↓（循环）</td><td>52.87</td><td><b>51.56</b></td><td>−2.5%</td><td>早停（16 轮）</td></tr>
+  <tr><td>C 辅助指标</td><td>NASA 分 ↓</td><td>5.82e9</td><td><b>3.20e9</b></td><td class="ok">−45%</td><td>同上（压住大 RUL 段高估）</td></tr>
+</table>
+
+<div class="box">
+<b>一句话结论</b>：三个数据集的改善全部来自<u>数据侧与表示侧</u>的改造，没有放大模型
+（B 仍是 865 参数、C 仍是 833 参数）。其中 B 包把“官方基线连‘什么都不学’都不如”这一失效状态
+纠正为“越过常数基线 21.5%”；A 包经 7 种方法验证，天花板确认为 0.72–0.73，未虚报提升。
+</div>
+
+<h2>2. 问题理解：为什么是“自进化系统”而不是“一个更准的模型”</h2>
+<p>赛题要求的是在漂移数据流上<b>自动维持并提升</b>模型性能的闭环：</p>
+<p style="text-align:center;font-weight:600;color:#1e3a8a;">
+漂移监测 → 诊断归因 → 实验优化 → 评估上线 → 回滚</p>
+<p>三个公开数据集恰好各自提供一个真实的漂移剧本，我们据此设计并验证了闭环：</p>
+<table>
+  <tr><th>剧本</th><th>训练分布</th><th>上线分布</th><th>漂移类型</th></tr>
+  <tr><td>A</td><td>b01 批次（445 条，全部类）</td><td>b02 批次（1,244 条，类别比例不同）</td><td>输入漂移 + 类条件漂移</td></tr>
+  <tr><td>B</td><td>9 根轴承（其中 2 根占 71.6% 样本）</td><td>另外 3 根（其中 1 根占 90.2%）</td><td>整机尺度漂移 + 关系漂移</td></tr>
+  <tr><td>C</td><td>496 台发动机（FD001–FD004）</td><td>另外 106 台，工况与故障模式变化</td><td>工况迁移 + 长尾</td></tr>
+</table>
+
+<h2>3. 系统架构</h2>
+<h3>3.1 六个环节与实现位置</h3>
+<table>
+  <tr><th>环节</th><th>实现</th><th>关键设计</th></tr>
+  <tr><td>漂移监测</td><td><code>metrics.drift_report</code></td>
+      <td>每特征两样本 KS 统计量中位数、超 0.2 的特征数、均值漂移 |z|、预测分布偏移（均为无标签指标，可在线上直接计算）</td></tr>
+  <tr><td>诊断归因</td><td><code>tasks.evaluate</code></td>
+      <td>按组误差分解：A 逐类召回、B 逐轴承 RMSE、C 逐子集 RMSE；同时输出漂移最大的 3 个特征名</td></tr>
+  <tr><td>实验优化</td><td><code>tasks.fine_tune</code></td>
+      <td>调用官方 <code>train_run</code> 续训（低学习率、1 或 3 epoch），保留父检查点 sha256 与步数，可审计</td></tr>
+  <tr><td>评估上线</td><td><code>runner</code> 守门</td>
+      <td>冠军/挑战者：候选与现役在<b>下一窗的已标注切片</b>上对比，胜者才上线</td></tr>
+  <tr><td>回滚</td><td>检查点栈</td>
+      <td>弹栈回到上一个被验证更好的模型，<b>不需要重训</b></td></tr>
+  <tr><td>成本核算</td><td><code>summary.json</code></td>
+      <td>训练秒数、epoch、更新次数、以及“每单位增益耗时”</td></tr>
+</table>
+
+<h3>3.2 策略层：LLM 决策 + 规则兜底（双保险）</h3>
+<p>策略器按固定接口 <code>decide(state) → action</code> 输出六种动作之一（hold / finetune_1ep /
+finetune_3ep / rollback / swap_candidate / recompute_stats）。<b>默认自动探测</b>平台注入的大模型接入信息
+（<code>SAMPLER_*</code>、<code>PYTRIO_*</code>、<code>OPENAI_*</code> 等 5 组环境变量），
+找到就用 LLM 决策，找不到或调用失败就在同一处回落规则版。</p>
+<div class="warn">
+<b>为什么必须有兜底</b>：门槛之一是“封闭评测中<b>无人工干预</b>跑完全部阶段”。若决策依赖一个评测环境里
+不可用的外部模型，系统会直接挂。实测（把 <code>SAMPLER_ENDPOINT</code> 指向不存在的端口）：
+<code>action=finetune_1ep / source=rule(fallback) / fallback=true / reason=URLError</code>——容器照常跑完。
+这条设计把“接 LLM”从风险变成了纯增益。
+</div>
+
+<h3>3.3 部署形态：一个镜像、三种入口</h3>
+<table>
+  <tr><th><code>HARNESS_MODE</code></th><th>行为</th><th>用途</th></tr>
+  <tr><td><code>loop</code>（默认）</td><td>跑完自进化闭环，产物写 <code>/output</code></td><td>批量评测</td></tr>
+  <tr><td><code>serve</code></td><td>stdin JSONL 请求 → stdout JSONL 预测，<b>自动识别 A/B/C</b></td><td>若平台以管道喂样本</td></tr>
+  <tr><td><code>selftest</code></td><td>秒级自检 + 三包各 1 条真实样本推理</td><td>健康检查 / 上线前验证</td></tr>
+</table>
+<p>镜像纯 CPU、无网络、只依赖 numpy==1.26.4；SwanLab 在镜像内默认关闭（<code>SWANLAB_MODE=disabled</code>），
+避免日志组件成为“跑不完”的原因。受限机制：窗口数、更新次数、epoch、秒数四道硬上限，
+触发即停并写入事件流水。</p>
+
+<h2 class="pb">4. 数据诊断：三个包的“病因”完全不同</h2>
+<p>所有诊断脚本位于 <code>harness/</code>（<code>train_a.py</code>、<code>train_b.py</code>、
+<code>train_c.py</code>、<code>diag_a_acetaldehyde.py</code> 等），仅依赖 numpy，可一键复跑。</p>
+
+<h3>4.1 B 包：官方基线连“什么都不学”都不如</h3>
+<table>
+  <tr><th>参照</th><th>RMSE（分钟）</th><th>说明</th></tr>
+  <tr><td>官方随包检查点</td><td><b>681.16</b></td><td>基线</td></tr>
+  <tr><td>常数预测（训练集 RUL 中位数 758）</td><td><b>470.90</b></td><td>不用任何特征，<b>已优于基线</b></td></tr>
+  <tr><td>每根轴承各自取均值（作弊，需轴承号）</td><td>415.5</td><td>只靠“身份”的参照</td></tr>
+  <tr><td>预测与真实 RUL 的秩相关</td><td>−0.327</td><td><b>方向是反的</b></td></tr>
+</table>
+<p>进一步定位到两个结构性原因：① <b>训练集被两根长寿命轴承垄断</b>（Bearing3_1+3_2 占 71.6% 样本，
+而验证集 90.2% 来自 Bearing3_4）；② <b>同一剩余寿命在不同轴承上对应完全不同的特征数值</b>
+（起点与失效阈值不同），即“绝对水平不可跨轴承比较”。</p>
+
+<h3>4.2 A 包：一个少数类整体塌陷，且是跨批概念漂移</h3>
+<p>验证集 1,244 条中 109 条「乙醛」<b>全部判错</b>（108 条判成「乙醇」），该类 F1 = 0。
+Macro-F1 为六类等权平均，因此 <code>(0.857×5 + 0)/6 = 0.714</code>——<b>单类归零直接砍掉 1/6 的分数</b>。</p>
+<p>为判定“能否救回”，我们在<b>批内</b>做了「乙醇 vs 乙醛」二分类交叉验证：</p>
+<table>
+  <tr><th>数据</th><th>1-NN</th><th>5-NN</th><th>LDA</th><th>两类质心距离</th></tr>
+  <tr><td>b01（训练批）</td><td>1.000</td><td>0.983</td><td>0.992</td><td>0.751</td></tr>
+  <tr><td>b02（验证批）</td><td>1.000</td><td>0.982</td><td><b>0.985</b></td><td>0.384</td></tr>
+</table>
+<p><b>判别信息存在</b>（b02 内部 LDA 0.985），失败原因是 b01 的乙醛特征中心漂移到 b02 的乙醇附近——
+典型<b>跨批概念漂移</b>。</p>
+
+<h3>4.3 C 包：误差被单点与长尾绑架</h3>
+<table>
+  <tr><th>事实</th><th>数值</th><th>含义</th></tr>
+  <tr><td>FD004 占平方误差 / 样本占比</td><td>54.0% / 37.8%</td><td>最大单点</td></tr>
+  <tr><td>真实 RUL&gt;200 的样本占 NASA 罚分</td><td>96.3%</td><td>大 RUL 段是硬骨头</td></tr>
+  <tr><td>逐发动机 RMSE 中位数 vs 整体</td><td>40.74 vs 52.87</td><td>整体被少数几台拉高</td></tr>
+  <tr><td>25-NN 局部平滑</td><td>50.95</td><td><b>比基线还好</b> → 基线“太尖”</td></tr>
+</table>
+
+<h2 class="pb">5. 工业模型优化</h2>
+<h3>5.1 B 包：三个手段缺一不可（RMSE 681.16 → 369.47）</h3>
+<p><b>手段 1 · 秩变换</b>：把每个特征替换为“在训练集里的分位”（201 个分位点，仅用 train.jsonl 拟合，
+分位表随检查点保存，推理用同一张表）。作用是把“绝对水平”抹掉、只留“相对位置”，对单调漂移天然鲁棒。<br>
+<b>手段 2 · 按轴承等权</b>：样本权重 <code>1/该轴承样本数</code>，让 9 根轴承贡献相同。
+只用训练集元信息做数据平衡，<b>不作为模型输入</b>。<br>
+<b>手段 3 · 强正则 + 随机初始化 + 早停</b>：<code>weight_decay=1e-2</code>（L2 只作用于 w1/w2），
+权重随机初始化，轮次由 <b>train 内部留出的两根轴承</b>选出（2 轮）。</p>
+
+<table>
+  <tr><th>配置（同一个 MLP，只改数据侧）</th><th>官方 validation RMSE</th><th>Bias</th><th>秩相关</th></tr>
+  <tr><td>原始特征 · 不加权 · 热启动</td><td>658.42</td><td>−321.5</td><td>−0.299</td></tr>
+  <tr><td>原始特征 · 等权 · 热启动</td><td>670.48</td><td>−351.9</td><td>−0.309</td></tr>
+  <tr><td>秩特征 · 不加权 · 随机 · wd=1e-2</td><td>391.85</td><td><b>+250.7</b></td><td><b>+0.777</b></td></tr>
+  <tr><td><b>秩特征 · 等权 · 随机 · wd=1e-2（定稿）</b></td><td><b>369.47</b></td><td>−110.3</td><td>+0.655</td></tr>
+  <tr><td>秩特征 · 等权 · 热启动 · wd=1e-3</td><td>511.75</td><td>−253.3</td><td>+0.302</td></tr>
+</table>
+<div class="box">
+<b>读法</b>：<b>秩变换给“方向”</b>（秩相关 −0.30 → +0.78），<b>按轴承等权给“尺度”</b>
+（Bias +251 → −110），两者缺一不可；<b>“热启动”会把方向破坏</b>（511.8 vs 369.5），
+因为秩特征改变了输入语义，必须随机初始化。
+</div>
+<p>逐轴承（before → after）：Bearing2_4 <b>390.8 → 60.3</b>、Bearing3_4 <b>710.8 → 383.0</b>、
+Bearing1_4 242.0 → 235.4。并且首次<b>越过常数基线 470.9（+21.5%）</b>——这一条比降 45.8% 更有意义。</p>
+
+<h3>5.2 A 包：7 种方法验证后的负结论（诚实记录）</h3>
+<table>
+  <tr><th>方法</th><th>Macro-F1</th><th>乙醛 recall</th><th>结论</th></tr>
+  <tr><td>类别加权（乙醛 ×1.59）</td><td>0.7268</td><td>0.000</td><td>加权只能让模型“更在意”，不能让它“看见”</td></tr>
+  <tr><td>ECDF 秩变换</td><td>0.6942</td><td>0.000</td><td class="no">有害（与 B 相反，不能跨包套用）</td></tr>
+  <tr><td>批内秩变换（收敛后）</td><td>0.6660</td><td>0.000</td><td>epoch 3 时的 0.202 是欠拟合假象</td></tr>
+  <tr><td>CORAL 二阶对齐</td><td>0.4025</td><td>0.000</td><td class="no">线性对齐放大错位</td></tr>
+  <tr><td>稳健缩放（median/IQR）</td><td>0.4820</td><td>0.018</td><td>无效</td></tr>
+  <tr><td>Fisher 前 96 维</td><td>0.7256（Acc 0.9011 最高）</td><td>0.000</td><td>准确率能刷，Macro-F1 被单类锁死</td></tr>
+  <tr><td>去漂移特征 σ&gt;1.0</td><td>0.6620</td><td><b>0.982</b></td><td>救回乙醛但牺牲其它类（拆东墙补西墙）</td></tr>
+</table>
+<p><b>定稿</b>：类别加权 + 早停（2 轮）= Macro-F1 <b>0.7268</b>、Acc 0.8867。
+<b>不宣称提升</b>——+0.0128 落在验证集噪声（±0.02）以内。A 的真实价值是上面这张表：
+它明确了“去乙醛”只有域自适应或<b>双模型门控</b>（全特征模型管 5 类 + 筛特征模型专判乙醛）两条路，
+后者证据已具备（乙醛 recall 0.982），留作后续工作。</p>
+
+<h3>5.3 C 包：早停拿下，集成按性价比放弃</h3>
+<p><b>早停</b>：轮次由 train 内部留出的发动机（每 5 台留 1）选出 16 轮 →
+RMSE <b>51.56（−2.5%）</b>、MAE 37.98、<b>NASA 分 5.82e9 → 3.20e9（−45%）</b>；
+四个子集全部不退化（FD001 42.83→40.7、FD002 41.15→41.0、FD003 55.36→52.4、FD004 63.24→62.0）。</p>
+<p><b>集成（同初值多 shuffle + 权重平均）</b>：5 成员得 51.37，只比单模型好 0.19（0.4%），
+却要 5 倍训练量 → <b>按资源效率不采用</b>。附带一个有价值的结论：
+<b>权重平均只在“共享同一初值”时有效</b>——随机初始化时 5 个成员落在不同盆地，
+权重平均得到 79.28，而它们的预测平均是 51.60。</p>
+
+<h2 class="pb">6. 闭环实测证据</h2>
+<table>
+  <tr><th>任务 / 模式</th><th>逐窗指标</th><th>闭环行为</th></tr>
+  <tr><td>A · official（只测不改）</td><td>0.572 → 0.660 → 0.333 → 0.498</td><td>全程 hold（该模式强制禁用更新，合规）</td></tr>
+  <tr><td>B · official（改进模型）</td><td>RMSE 499.8 → 295.3 → 269.6</td><td>基线模型同窗口为 946.0 → 619.6 → 337.4</td></tr>
+  <tr><td>B · train（可更新）</td><td>155.6 → 123.9 → 247.6</td><td><b>上线 0 次、回滚 2 次</b>：两个候选均被守门驳回</td></tr>
+  <tr><td>C · train（可更新）</td><td>RMSE 43.2 → 62.1</td><td>触发 1 次续训（38.95 s）</td></tr>
+</table>
+<p>B 的 train 模式那一跑是闭环的完整演示：<code>finetune_1ep</code> → 守门通过上线 →
+下一窗退化 → <b>自动 rollback</b> → 再升级到 <code>finetune_3ep</code>。
+所有决策都写进 <code>decisions.jsonl</code>（含状态快照、动作、理由、决策来源 rule/llm/fallback）。</p>
+
+<h2>7. 工程与合规</h2>
+<table>
+  <tr><th>要求</th><th>本方案的做法</th></tr>
+  <tr><td>验证集只用于衡量</td><td><code>--stream official</code> 强制禁用一切更新动作；验证集不进梯度、不进标准化/分位表拟合、不参与选型与选轮次</td></tr>
+  <tr><td>选型不碰验证集</td><td>轮次/配置只在 train 内部留出（A 按类分层时间尾、B 按整根轴承、C 按发动机）上选</td></tr>
+  <tr><td>守门不碰验证集</td><td>冠军/挑战者对比用的是“下一窗已标注切片”，不是官方验证集</td></tr>
+  <tr><td>ID 不进模型输入</td><td><code>meta</code>（轴承号/台号/批次号/快照序号）只用于分组诊断与训练期样本加权</td></tr>
+  <tr><td>不自造标签</td><td>不做 RUL 封顶、不做健康等级分箱、不以自定义等级替代原始寿命；EDA 已实测封顶/降权/对数变换三者均为负收益</td></tr>
+  <tr><td>无人工干预跑完</td><td>LLM 不可用自动回落规则；四道硬上限防止无限制迭代；日志组件离线静默</td></tr>
+  <tr><td>可复现</td><td>每轮产物含父检查点 sha256、步数变化、数据 sha256、配置、耗时；脚本 <code>python harness/train_*.py</code> 一键复跑</td></tr>
+</table>
+<p><b>可审计产物</b>：<code>windows.jsonl</code>（逐窗指标/漂移/动作）、
+<code>decisions.jsonl</code>（决策流水）、<code>summary.json</code>（上线/回滚次数与成本）、
+<code>model/&lt;TASK&gt;/manifest.json</code>（交付模型 sha256 与指标序列）。</p>
+
+<h2>8. 成本核算</h2>
+<table>
+  <tr><th>任务</th><th>参数量</th><th>一轮训练</th><th>本次优化总耗时</th><th>每点增益成本</th></tr>
+  <tr><td>A</td><td>4,326</td><td>&lt; 1 s</td><td>约 6 min（含 7 种方法的消融）</td><td>—（无实质提升）</td></tr>
+  <tr><td>B</td><td>865</td><td>0.3 s</td><td>约 3 min（含 7 组配置搜索）</td><td><b>0.6 s / 每 1% RMSE</b></td></tr>
+  <tr><td>C</td><td>833</td><td>1.4 s</td><td>约 5 min</td><td>2 s / 每 1% RMSE</td></tr>
+</table>
+<p>全部训练在 CPU 上完成，B 包用 0.3 秒换来 −45.8%，是本方案“单位增益成本”最好的部分；
+我们因此主动放弃了 C 的 5 倍成本集成（仅 0.4% 收益）。</p>
+
+<h2>9. 局限与后续工作</h2>
+<ol>
+  <li><b>A 包的乙醛</b>：需要域自适应（非线性）或双模型门控。线性 CORAL 已证否；
+      门控方案证据已具备（筛特征模型乙醛 recall 0.982），但交付形态要从“单模型”改为“双模型 + 规则”，
+      本轮时间不足未做，<b>明确列为未完成</b>。</li>
+  <li><b>B 包的选型代理失效</b>：内部留出轴承（中短寿命）代表不了验证集里 1515 快照的长寿命轴承，
+      导致“内部最优”与“验证最优”不一致。已在报告中如实记录，后续应改为按寿命分层的留出。</li>
+  <li><b>B 包的线性参照仍有优势</b>：秩特征上岭回归 294.9 &lt; MLP 369.5，说明模型容量/结构还有优化空间
+      （hidden 下调、或引入线性集成成员）。</li>
+  <li><b>C 包的 FD004</b>：仍占 54% 误差，未做按工况分组标准化。</li>
+</ol>
+
+<h2>10. 复现方式</h2>
+<p><code>python harness/train_b.py</code>（B 配置搜索 + 定稿）、<code>python harness/train_a.py</code>、
+<code>python harness/train_c.py</code>、<code>python harness/runner.py --task all --stream official --windows 4</code>。
+每轮的完整记录见 <code>runs/</code> 与 <code>实验日志.md</code>（含假设、改动、指标、决策、失败记录），
+云端实验记录见 SwanLab 项目 <code>zhixun-engine-3tasks</code>。</p>
+
+<footer>
+本报告全部数字来自 <code>runs/{A,B,C}_improve_report.json</code> 与 <code>实验日志.md</code>，
+由 <code>harness/train_*.py</code> 自动产出；脚本仅依赖 numpy，可在纯 CPU、无网络环境复跑。
+</footer>
+
+</body>
+</html>
