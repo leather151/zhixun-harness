@@ -94,17 +94,47 @@
       <td>训练秒数、epoch、更新次数、以及“每单位增益耗时”</td></tr>
 </table>
 
-<h3>3.2 策略层：LLM 决策 + 规则兜底（双保险）</h3>
+<h3>3.2 策略层：真实 LLM（PyTRiO Qwen3.5-4B）+ 规则兜底</h3>
 <p>策略器按固定接口 <code>decide(state) → action</code> 输出六种动作之一（hold / finetune_1ep /
-finetune_3ep / rollback / swap_candidate / recompute_stats）。<b>默认自动探测</b>平台注入的大模型接入信息
-（<code>SAMPLER_*</code>、<code>PYTRIO_*</code>、<code>OPENAI_*</code> 等 5 组环境变量），
-找到就用 LLM 决策，找不到或调用失败就在同一处回落规则版。</p>
+finetune_3ep / rollback / swap_candidate / recompute_stats）。接入的是
+<b>PyTRiO 的 <code>Qwen/Qwen3.5-4B</code></b>（OpenAI 兼容入口
+<code>https://pytrio.com/api/openai/v1</code>），并按以下顺序决定用谁：</p>
+<ol>
+  <li>平台注入的接入信息（<code>SAMPLER_*</code> / <code>PYTRIO_*</code> / <code>OPENAI_*</code> 等 5 组环境变量）优先；</li>
+  <li>否则若本机有 Key（环境变量或 <code>.env.local</code>）且配置里有默认 endpoint，就用默认；</li>
+  <li>都没有 → 确定性规则决策器。</li>
+</ol>
+
+<table>
+  <tr><th>实测项</th><th>结果</th><th>工程含义</th></tr>
+  <tr><td>模型形态</td><td><b>推理型模型</b>：默认把 <code>max_tokens</code> 全用在 <code>reasoning</code> 上，<code>content</code> 返回 null</td>
+      <td>直接解析 <code>content</code> 会 100% 失败</td></tr>
+  <tr><td>解法</td><td>请求带 <code>enable_thinking: false</code></td>
+      <td>0.3 s / 12 tokens 返回干净的 <code>{"action": "..."}</code></td></tr>
+  <tr><td>兼容性</td><td>不支持该字段的服务会返回 400（<code>chat_template_kwargs</code> 也被拒）</td>
+      <td>代码对不支持字段<b>自动去除并重试</b>，换任何 OpenAI 兼容服务都能用</td></tr>
+  <tr><td>稳定性</td><td><b>5/5</b> 次返回可解析动作；<code>n=3</code> 自洽性投票后延迟不变（约 300 ms）</td>
+      <td>小模型也能做策略层</td></tr>
+  <tr><td>决策变化</td><td>LLM 比规则版更保守（更多 hold）；B 包第 2 窗它选了 <code>finetune_3ep</code> 而规则版选 rollback</td>
+      <td><b>策略层真的在改变闭环行为</b>，不是摆设</td></tr>
+</table>
+
 <div class="warn">
-<b>为什么必须有兜底</b>：门槛之一是“封闭评测中<b>无人工干预</b>跑完全部阶段”。若决策依赖一个评测环境里
-不可用的外部模型，系统会直接挂。实测（把 <code>SAMPLER_ENDPOINT</code> 指向不存在的端口）：
+<b>为什么必须保留规则兜底</b>：门槛之一是“封闭评测中<b>无人工干预</b>跑完全部阶段”。若决策依赖一个评测环境里
+不可用的外部模型，系统会直接挂。实测（把 endpoint 指向不存在的端口）：
 <code>action=finetune_1ep / source=rule(fallback) / fallback=true / reason=URLError</code>——容器照常跑完。
-这条设计把“接 LLM”从风险变成了纯增益。
 </div>
+
+<h3>3.3 为什么不引入官方 SDK</h3>
+<p>PyTRiO 提供了 <code>import pytrio as trio</code> 的 SDK（<code>ServiceClient</code> →
+<code>create_sampling_client</code> → <code>SamplingParams</code>）。我们评估后选择 <b>REST</b>，理由：</p>
+<table>
+  <tr><th>维度</th><th>事实</th><th>结论</th></tr>
+  <tr><td>依赖</td><td><code>pytrio 0.2.9</code> 需要 <code>modelscope&gt;=1.15</code> + <code>transformers&gt;=4.57</code> 等 9 个包</td>
+      <td>镜像必须纯 CPU、离线、只装 numpy → <b>SDK 不能进镜像</b></td></tr>
+  <tr><td>能力</td><td>REST 已支持 <code>seed</code> 与 <code>n</code> 多采样；SDK 独有能力（训练、
+      <code>save_weights_for_sampler</code>）本账号不可用</td><td>REST 足够，且零依赖</td></tr>
+</table>
 
 <h3>3.3 部署形态：一个镜像、三种入口</h3>
 <table>
@@ -216,6 +246,20 @@ RMSE <b>51.56（−2.5%）</b>、MAE 37.98、<b>NASA 分 5.82e9 → 3.20e9（−
 下一窗退化 → <b>自动 rollback</b> → 再升级到 <code>finetune_3ep</code>。
 所有决策都写进 <code>decisions.jsonl</code>（含状态快照、动作、理由、决策来源 rule/llm/fallback）。</p>
 
+<h3>6.2 真 LLM（Sampler）驱动的闭环实测</h3>
+<p>把策略层切到 PyTRiO 的 <code>Qwen/Qwen3.5-4B</code>（<code>vote=3</code>）后重跑三包，
+决策来源全部为 <code>source=llm</code>，且与规则版<b>产生了不同的动作</b>：</p>
+<table>
+  <tr><th>任务</th><th>逐窗指标</th><th>LLM 决策</th><th>与规则版的差异</th></tr>
+  <tr><td>A gas 六分类</td><td>1.000 / 1.000 / 0.982</td><td>hold、hold、finetune_1ep</td><td>基本一致</td></tr>
+  <tr><td>B 轴承 RUL</td><td>155.6 / 123.9 / 247.6</td><td>hold、<b>finetune_3ep</b>、rollback</td>
+      <td>第 2 窗规则版选 rollback，LLM 认为漂移显著（KS 0.509）选择加大步长</td></tr>
+  <tr><td>C 涡扇 RUL</td><td>36.7 / 64.6 / 43.5</td><td>hold、hold、hold</td>
+      <td>第 2 窗规则版会续训，LLM 判断漂移不足（KS 0.256）选择不动</td></tr>
+</table>
+<p>每条决策在 <code>decisions.jsonl</code> 中都记录了 <code>votes</code>（3 个候选）与“N/M 票一致”，
+<code>summary.json</code> 记录 <code>policy_impl=llm</code> 与命中来源，可完整审计。</p>
+
 <h2>7. 工程与合规</h2>
 <table>
   <tr><th>要求</th><th>本方案的做法</th></tr>
@@ -253,10 +297,17 @@ RMSE <b>51.56（−2.5%）</b>、MAE 37.98、<b>NASA 分 5.82e9 → 3.20e9（−
   <li><b>C 包的 FD004</b>：仍占 54% 误差，未做按工况分组标准化。</li>
 </ol>
 
-<h2>10. 复现方式</h2>
-<p><code>python harness/train_b.py</code>（B 配置搜索 + 定稿）、<code>python harness/train_a.py</code>、
-<code>python harness/train_c.py</code>、<code>python harness/runner.py --task all --stream official --windows 4</code>。
-每轮的完整记录见 <code>runs/</code> 与 <code>实验日志.md</code>（含假设、改动、指标、决策、失败记录），
+<h2>10. 复现与提交物</h2>
+<p><b>源码仓库（公开）</b>：<code>https://github.com/leather151/zhixun-harness</code>
+（59 个文件，含 <code>harness/</code>、<code>vendor/</code>、三个交付检查点、实验日志与技术报告；
+不含密钥、不含 <code>dist/</code>/<code>runs/</code>/数据）。</p>
+<p><b>复现命令</b>：<code>python harness/train_b.py</code>（B 配置搜索 + 定稿）、<code>python harness/train_a.py</code>、
+<code>python harness/train_c.py</code>、<code>python harness/runner.py --task all --stream official --windows 4</code>；
+LLM 决策自测：<code>python harness/llm_probe.py --endpoint https://pytrio.com/api/openai/v1 --model Qwen/Qwen3.5-4B</code>。</p>
+<p><b>Harness 镜像</b>：<code>zhixun-harness:v5</code>（<code>docker save</code> 归档 248.5 MB，
+sha256 <code>89A1F24A…</code>），纯 CPU、离线、只依赖 numpy；<code>HARNESS_MODE</code>
+可选 <code>loop</code>/<code>serve</code>/<code>selftest</code>，四道硬上限防无限制迭代。</p>
+<p>每轮的完整记录见仓库 <code>runs/</code> 与 <code>实验日志.md</code>（含假设、改动、指标、决策、失败记录），
 云端实验记录见 SwanLab 项目 <code>zhixun-engine-3tasks</code>。</p>
 
 <footer>
