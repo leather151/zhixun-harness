@@ -433,8 +433,12 @@ def main(argv=None):
             raise SystemExit(f"以下任务失败：{bad}")
         return codes
     cfg = json.loads(Path(args.config).read_text(encoding="utf-8"))
-    args._policy = P.build(args.policy, cfg["policy"], args.llm_endpoint,
-                           args.llm_model, args.llm_key)
+    llm_cfg = cfg.get("llm", {}) or {}
+    args._policy = P.build(args.policy, cfg["policy"], args.llm_endpoint, args.llm_model,
+                           args.llm_key,
+                           default_endpoint=llm_cfg.get("endpoint"),
+                           default_model=llm_cfg.get("model"),
+                           enable_thinking=llm_cfg.get("enable_thinking", False))
     return run(args.task, args, cfg)
 
 

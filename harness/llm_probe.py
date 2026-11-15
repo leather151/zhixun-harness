@@ -52,6 +52,8 @@ def main(argv=None):
     ap.add_argument("--repeat", type=int, default=1)
     ap.add_argument("--timeout", type=float, default=30.0)
     args = ap.parse_args(argv)
+    if not args.key:
+        args.key = P._default_key() or ""
 
     pol = P.LLMPolicy(args.endpoint, args.model, api_key=args.key, timeout=args.timeout,
                       cfg={"ks_median_trigger": 0.25, "abs_z_median_trigger": 0.5,

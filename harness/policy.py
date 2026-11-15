@@ -92,50 +92,102 @@ class RulePolicy:
         return {"action": "hold", "reason": "无可用 epoch 预算", "source": self.name}
 
 
+def _default_key():
+    """取 API Key：环境变量优先，其次工程根目录的 .env.local（该文件已被 gitignore）。"""
+    import os
+    from pathlib import Path
+    for name in ("PYTRIO_API_KEY", "SAMPLER_API_KEY", "OPENAI_API_KEY"):
+        value = os.environ.get(name)
+        if value and value.strip():
+            return value.strip()
+    for path in (Path(__file__).resolve().parent.parent / ".env.local",
+                 Path("/app/.env.local")):
+        if path.exists():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if "=" not in line or line.strip().startswith("#"):
+                    continue
+                k, v = line.split("=", 1)
+                if k.strip() in ("PYTRIO_API_KEY", "SAMPLER_API_KEY", "OPENAI_API_KEY"):
+                    return v.strip()
+    return None
+
+
 class LLMPolicy:
     name = "llm"
 
-    def __init__(self, endpoint, model, api_key=None, timeout=20.0, cfg=None):
+    def __init__(self, endpoint, model, api_key=None, timeout=20.0, cfg=None,
+                 enable_thinking=False, max_tokens=128):
         self.endpoint = endpoint.rstrip("/")
         self.model = model
-        self.api_key = api_key
+        self.api_key = api_key or _default_key()
         self.timeout = timeout
         self.cfg = cfg or {}
         self.fallback = RulePolicy(self.cfg)
+        # 实测（PyTRiO 的 Qwen3.5-4B）：推理型模型默认会把 max_tokens 全用在 reasoning 上，
+        # content 返回 null；关掉思考后 0.3 s 就给出干净的 {"action": ...}。
+        # 但并非所有 OpenAI 兼容服务都认这个字段 → 遇到 400 不支持时自动去掉重试。
+        self.enable_thinking = enable_thinking
+        self.max_tokens = max_tokens
 
-    def __call__(self, state, caps):
-        body = json.dumps({
-            "model": self.model,
-            "temperature": 0,
-            "max_tokens": 64,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": json.dumps(
-                    {"state": state, "caps": caps, "allowed_actions": ACTIONS},
-                    ensure_ascii=False)},
-            ],
-        }).encode("utf-8")
-        url = self.endpoint if self.endpoint.endswith("/chat/completions") else \
-            self.endpoint + "/chat/completions"
+    # ---------------------------------------------------------------- HTTP
+    def _post(self, body):
+        import urllib.error
+        import urllib.request
+        url = self.endpoint if self.endpoint.endswith("/chat/completions") \
+            else self.endpoint + "/chat/completions"
         req = urllib.request.Request(url, data=body, method="POST",
                                      headers={"Content-Type": "application/json",
                                               **({"Authorization": f"Bearer {self.api_key}"}
                                                  if self.api_key else {})})
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                payload = json.loads(resp.read().decode("utf-8"))
-            text = payload["choices"][0]["message"]["content"]
-            action = _parse_action(text)
+                return resp.status, resp.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read().decode("utf-8", "replace")[:400]
+
+    def __call__(self, state, caps):
+        payload = {
+            "model": self.model,
+            "temperature": 0,
+            "max_tokens": self.max_tokens,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": json.dumps(
+                    {"state": state, "caps": caps, "allowed_actions": ACTIONS},
+                    ensure_ascii=False)},
+            ],
+        }
+        if self.enable_thinking is not None:
+            payload["enable_thinking"] = bool(self.enable_thinking)
+        try:
+            status, text = self._post(json.dumps(payload).encode("utf-8"))
+            # 有些服务不认 enable_thinking → 去掉再试一次
+            if status == 400 and self.enable_thinking is not None \
+                    and ("enable_thinking" in text or "not supported" in text
+                         or "unsupported" in text):
+                payload.pop("enable_thinking", None)
+                self.enable_thinking = None
+                status, text = self._post(json.dumps(payload).encode("utf-8"))
+            if status != 200:
+                raise RuntimeError(f"HTTP {status}: {text[:200]}")
+
+            data = json.loads(text)
+            msg = data["choices"][0]["message"]
+            content = (msg.get("content") or "").strip()
+            if not content:                       # 推理型模型可能把文本放在 reasoning
+                content = (msg.get("reasoning") or msg.get("reasoning_content") or "").strip()
+            action = _parse_action(content)
             if action is None:
-                raise ValueError(f"模型输出无法解析为动作：{text[:120]}")
+                raise ValueError(f"模型输出无法解析为动作：{content[:120]}")
             if caps.get("updates_left", 0) <= 0 or caps.get("epochs_left", 0) <= 0:
                 return {"action": "hold", "reason": "预算已用尽（覆盖 LLM 建议）",
-                        "source": self.name, "llm_raw": text[:200]}
+                        "source": self.name, "llm_raw": content[:200]}
             if not state["updates_allowed"] and action != "hold":
                 return {"action": "hold", "reason": "该模式禁止更新（覆盖 LLM 建议）",
-                        "source": self.name, "llm_raw": text[:200]}
+                        "source": self.name, "llm_raw": content[:200]}
             return {"action": action, "reason": "LLM 决策", "source": self.name,
-                    "llm_raw": text[:200]}
+                    "llm_raw": content[:200],
+                    "usage": data.get("usage"), }
         except Exception as exc:                                    # noqa: BLE001
             out = self.fallback(state, caps)
             out.update({"source": "rule(fallback)", "fallback": True,
@@ -159,23 +211,30 @@ def _parse_action(text):
     return None
 
 
-def build(kind, cfg, endpoint=None, model=None, api_key=None):
+def build(kind, cfg, endpoint=None, model=None, api_key=None,
+          default_endpoint=None, default_model=None, enable_thinking=False):
     """构造决策器。
 
-    kind = "auto"（默认）时按环境变量自动探测 Sampler/LLM 的接入信息：
-    找到 endpoint 就用 LLMPolicy（失败自动回落规则版），找不到就用 RulePolicy。
-    这样平台无论是否注入大模型接入信息，容器都能跑完——这是"无人干预跑完"的必要条件。
+    kind = "auto"（默认）：
+      1) 先按环境变量探测平台注入的接入信息；
+      2) 没有的话，若本机有 Key（环境变量或 .env.local）且配置里给了默认 endpoint，
+         就用默认 endpoint（本项目默认是 PyTRiO 的 Qwen）；
+      3) 以上都没有 → 确定性规则决策器。
     """
     detected = None
     if kind == "auto":
         detected = detect_from_env()
-        kind = "llm" if detected else "rule"
         if detected:
             endpoint, model, api_key = detected["endpoint"], detected["model"], detected["api_key"]
-    if kind == "llm" and endpoint:
-        pol = LLMPolicy(endpoint, model or "qwen", api_key=api_key, cfg=cfg)
+        elif default_endpoint and (api_key or _default_key()):
+            endpoint, model = default_endpoint, default_model or model
+    if kind in ("auto", "llm") and endpoint:
+        pol = LLMPolicy(endpoint, model or "qwen", api_key=api_key, cfg=cfg,
+                        enable_thinking=enable_thinking)
         if detected:
             pol.detected_env = detected["source"]
+        elif default_endpoint and endpoint == default_endpoint:
+            pol.detected_env = "config.default_endpoint"
         return pol
     return RulePolicy(cfg)
 
