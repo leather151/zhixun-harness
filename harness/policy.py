@@ -116,7 +116,7 @@ class LLMPolicy:
     name = "llm"
 
     def __init__(self, endpoint, model, api_key=None, timeout=20.0, cfg=None,
-                 enable_thinking=False, max_tokens=128):
+                 enable_thinking=False, max_tokens=128, vote=1):
         self.endpoint = endpoint.rstrip("/")
         self.model = model
         self.api_key = api_key or _default_key()
@@ -128,6 +128,8 @@ class LLMPolicy:
         # 但并非所有 OpenAI 兼容服务都认这个字段 → 遇到 400 不支持时自动去掉重试。
         self.enable_thinking = enable_thinking
         self.max_tokens = max_tokens
+        # vote>1：用 OpenAI 的 n 参数一次取多个候选做多数投票（小模型提稳的常用手段）
+        self.vote = max(1, int(vote))
 
     # ---------------------------------------------------------------- HTTP
     def _post(self, body):
@@ -148,7 +150,7 @@ class LLMPolicy:
     def __call__(self, state, caps):
         payload = {
             "model": self.model,
-            "temperature": 0,
+            "temperature": 0 if self.vote <= 1 else 0.6,
             "max_tokens": self.max_tokens,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
@@ -159,35 +161,56 @@ class LLMPolicy:
         }
         if self.enable_thinking is not None:
             payload["enable_thinking"] = bool(self.enable_thinking)
+        if self.vote > 1:
+            payload["n"] = self.vote
         try:
             status, text = self._post(json.dumps(payload).encode("utf-8"))
-            # 有些服务不认 enable_thinking → 去掉再试一次
-            if status == 400 and self.enable_thinking is not None \
-                    and ("enable_thinking" in text or "not supported" in text
-                         or "unsupported" in text):
-                payload.pop("enable_thinking", None)
-                self.enable_thinking = None
-                status, text = self._post(json.dumps(payload).encode("utf-8"))
+            # 有些服务不认 enable_thinking / n → 逐项去掉再试
+            if status == 400:
+                changed = False
+                if self.enable_thinking is not None and (
+                        "enable_thinking" in text or "not supported" in text
+                        or "unsupported" in text):
+                    payload.pop("enable_thinking", None)
+                    self.enable_thinking = None
+                    changed = True
+                if self.vote > 1 and ("n" in text or "unsupported" in text):
+                    payload.pop("n", None)
+                    self.vote = 1
+                    payload["temperature"] = 0
+                    changed = True
+                if changed:
+                    status, text = self._post(json.dumps(payload).encode("utf-8"))
             if status != 200:
                 raise RuntimeError(f"HTTP {status}: {text[:200]}")
 
             data = json.loads(text)
-            msg = data["choices"][0]["message"]
-            content = (msg.get("content") or "").strip()
-            if not content:                       # 推理型模型可能把文本放在 reasoning
-                content = (msg.get("reasoning") or msg.get("reasoning_content") or "").strip()
-            action = _parse_action(content)
-            if action is None:
-                raise ValueError(f"模型输出无法解析为动作：{content[:120]}")
+            actions, raw_all = [], []
+            for choice in data.get("choices") or []:
+                message = choice.get("message") or {}
+                content = (message.get("content") or "").strip()
+                if not content:                   # 推理型模型可能把文本放在 reasoning
+                    content = (message.get("reasoning")
+                               or message.get("reasoning_content") or "").strip()
+                raw_all.append(content[:120])
+                parsed = _parse_action(content)
+                if parsed:
+                    actions.append(parsed)
+            if not actions:
+                raise ValueError(f"模型输出无法解析为动作：{raw_all[:1]}")
+            action = max(set(actions), key=actions.count)       # 多数投票
+            consensus = actions.count(action)
+
             if caps.get("updates_left", 0) <= 0 or caps.get("epochs_left", 0) <= 0:
                 return {"action": "hold", "reason": "预算已用尽（覆盖 LLM 建议）",
-                        "source": self.name, "llm_raw": content[:200]}
+                        "source": self.name, "llm_raw": raw_all[0], "votes": actions}
             if not state["updates_allowed"] and action != "hold":
                 return {"action": "hold", "reason": "该模式禁止更新（覆盖 LLM 建议）",
-                        "source": self.name, "llm_raw": content[:200]}
-            return {"action": action, "reason": "LLM 决策", "source": self.name,
-                    "llm_raw": content[:200],
-                    "usage": data.get("usage"), }
+                        "source": self.name, "llm_raw": raw_all[0], "votes": actions}
+            return {"action": action,
+                    "reason": f"LLM 决策（{consensus}/{len(actions)} 票一致）",
+                    "source": self.name, "llm_raw": raw_all[0],
+                    "votes": actions, "usage": data.get("usage")}
         except Exception as exc:                                    # noqa: BLE001
             out = self.fallback(state, caps)
             out.update({"source": "rule(fallback)", "fallback": True,
@@ -212,7 +235,7 @@ def _parse_action(text):
 
 
 def build(kind, cfg, endpoint=None, model=None, api_key=None,
-          default_endpoint=None, default_model=None, enable_thinking=False):
+          default_endpoint=None, default_model=None, enable_thinking=False, vote=1):
     """构造决策器。
 
     kind = "auto"（默认）：
@@ -230,7 +253,7 @@ def build(kind, cfg, endpoint=None, model=None, api_key=None,
             endpoint, model = default_endpoint, default_model or model
     if kind in ("auto", "llm") and endpoint:
         pol = LLMPolicy(endpoint, model or "qwen", api_key=api_key, cfg=cfg,
-                        enable_thinking=enable_thinking)
+                        enable_thinking=enable_thinking, vote=vote)
         if detected:
             pol.detected_env = detected["source"]
         elif default_endpoint and endpoint == default_endpoint:

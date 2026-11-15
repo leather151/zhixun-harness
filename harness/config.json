@@ -25,6 +25,7 @@
                 "endpoint":  "https://pytrio.com/api/openai/v1",
                 "model":  "Qwen/Qwen3.5-4B",
                 "enable_thinking":  false,
+    "vote":  3,
                 "timeout_seconds":  30,
                 "_说明":  "PyTRiO 的 OpenAI 兼容入口。有 Key（环境变量或 .env.local）时 auto 模式会自动用它；容器内若平台注入 SAMPLER_*/PYTRIO_* 则优先用注入值。"
             }

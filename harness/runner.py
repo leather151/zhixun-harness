@@ -438,7 +438,8 @@ def main(argv=None):
                            args.llm_key,
                            default_endpoint=llm_cfg.get("endpoint"),
                            default_model=llm_cfg.get("model"),
-                           enable_thinking=llm_cfg.get("enable_thinking", False))
+                           enable_thinking=llm_cfg.get("enable_thinking", False),
+                           vote=llm_cfg.get("vote", 1))
     return run(args.task, args, cfg)
 
 
