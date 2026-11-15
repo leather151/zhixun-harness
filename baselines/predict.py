@@ -41,7 +41,8 @@ VENDOR_ROOT = Path(__file__).resolve().parent.parent / "vendor"
 MODEL_ROOT = Path(__file__).resolve().parent.parent / "models"
 
 # 每个任务的检查点优先级（与 harness/tasks.checkpoint_path 保持一致）
-CHECKPOINT_ORDER = ("checkpoint_best.npz", "checkpoint_rank.npz", "checkpoint.npz")
+# 交付位优先：平台读 checkpoint.npz 且用自己的原始特征推理路径，所以它必须是"开箱即用"的模型
+CHECKPOINT_ORDER = ("checkpoint.npz", "checkpoint_best.npz", "checkpoint_rank.npz")
 
 _MODEL_MODULES = {}
 _MODELS = {}

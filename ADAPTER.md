@@ -31,11 +31,25 @@ python -u /app/harness/entry.py        # 由 HARNESS_MODE 决定行为
 
 ## 2. 三个任务与它们的检查点
 
-| 任务 | 类型 | 特征 | 交付检查点 | 预处理 |
-| --- | --- | --- | --- | --- |
-| A | 分类（6 类） | 128 | `/app/models/A/checkpoint_best.npz` | 无 |
-| B | 回归（分钟） | 34 | `/app/models/B/checkpoint_rank.npz` | **rank（分位表在 metadata 里）** |
-| C | 回归（循环） | 24 | `/app/models/C/checkpoint_best.npz` | 无 |
+**交付位就是 `checkpoint.npz`** —— 平台评测读这个文件名，并用它自己的
+`Model.predict(原始特征)` 推理（**不会**施加我们 metadata 里的预处理）。
+所以三个任务的 `checkpoint.npz` 都是"开箱即用、只吃原始特征"的模型。
+
+| 任务 | 类型 | 特征 | 交付检查点（= 平台读取） | 预处理 | 官方 validation |
+| --- | --- | --- | --- | --- | --- |
+| A | 分类（6 类） | 128 | `/app/models/A/checkpoint.npz` | 无 | Macro-F1 0.7268 |
+| B | 回归（分钟） | 34 | `/app/models/B/checkpoint.npz`（蒸馏版） | 无 | RMSE 536.82 |
+| C | 回归（循环） | 24 | `/app/models/C/checkpoint.npz` | 无 | RMSE 51.56 |
+
+内部实验档案（不参与交付，保留以便审计/复现）：
+
+| 文件 | 说明 |
+| --- | --- |
+| `models/<T>/checkpoint_official_baseline.npz` | 官方起点（A/B/C 基线） |
+| `models/B/checkpoint_rank.npz` | 秩变换模型 RMSE 369.47。**依赖外部秩变换**（分位表在 metadata 里），
+平台推理路径不施加，直接改名成 `checkpoint.npz` 会让预测被 ReLU 夹到 0。它现在是 B 蒸馏版的**教师** |
+
+> A/C 的 `checkpoint_best.npz` 与 `checkpoint.npz` 是同一份模型，留着只为对照历史。
 
 ## 3. 推理
 

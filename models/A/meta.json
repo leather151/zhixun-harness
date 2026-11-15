@@ -16,7 +16,7 @@
   "target_unit": "",
   "hidden": 32,
   "parameter_count": 4326,
-  "default_checkpoint": "checkpoint_best.npz",
+  "default_checkpoint": "checkpoint.npz",
   "checkpoint_sha256": "sha256:c9e1c2abce83e750f5dd25cf7c68b0b176ba71ab8a78e04639c7e466c77408a2",
   "checkpoint_bytes": 132892,
   "preprocess": "none",

@@ -7,30 +7,25 @@
   "input_path_hint": "inputs.horizontal[0..16], inputs.vertical[0..16]",
   "classes": [],
   "target_unit": "minutes",
-  "hidden": 24,
-  "parameter_count": 865,
-  "default_checkpoint": "checkpoint_rank.npz",
-  "checkpoint_sha256": "sha256:ae4dc135327fca34c4cecedcc9cd8fad5b1c49a847362127b29d35309395a686",
-  "checkpoint_bytes": 319564,
-  "preprocess": {
-    "kind": "rank",
-    "n_quantiles": 201,
-    "fitted_on": "official train.jsonl only",
-    "stored_in": "checkpoint metadata.preprocess.quantiles"
-  },
+  "hidden": 128,
+  "parameter_count": 4609,
+  "default_checkpoint": "checkpoint.npz",
+  "checkpoint_sha256": "sha256:2e1f83028af5d069ef02b1d0f96a060644f9b332af0ff398036fc09aa7b94605",
+  "checkpoint_bytes": 127764,
+  "preprocess": "none",
   "target_scaling": {
-    "mean": 954.1505972696245,
-    "scale": 785.2301498010885
+    "mean": 816.6404393782431,
+    "scale": 509.1348004583209
   },
   "seed": 42,
   "validation": {
-    "rmse": 369.47,
-    "mae": 301.34,
-    "bias": -110.3,
-    "pearson_r": 0.655,
-    "note": "官方 validation.jsonl；对照常值基线 RMSE 470.9"
+    "rmse": 536.82,
+    "mae": 440.42,
+    "bias": -271.71,
+    "pearson_r": 0.16,
+    "note": "官方 validation.jsonl；官方基线 681.16 / 563.11。这是「原始特征即可推理」的蒸馏版；秩模型 369.47 依赖外部秩变换，平台评测路径不施加，故只作内部档案 checkpoint_rank.npz"
   },
-  "recipe": "秩变换(ECDF,201分位,仅train拟合) + 按轴承等权 + 随机初始化 + wd=1e-2 + epochs=2",
+  "recipe": "蒸馏自秩模型 · hidden=128 · 域内合成监督(27.7 万行,含跨轴承水平偏移增强) · 无外部预处理",
   "compliance": [
     "validation 只测不改",
     "预处理仅在 train 上拟合",

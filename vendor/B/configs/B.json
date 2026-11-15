@@ -3,7 +3,7 @@
   "task": "regression",
   "target_unit": "minutes",
   "classes": [],
-  "hidden": 24,
+  "hidden": 128,
   "seed": 42,
   "learning_rate": 0.003,
   "batch_size": 128,

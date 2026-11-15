@@ -14,10 +14,11 @@ from pathlib import Path
 import numpy as np
 
 APP = Path(__file__).resolve().parent.parent
-if str(APP) not in sys.path:
-    sys.path.insert(0, str(APP))
+for entry in (str(APP), str(APP / "harness")):
+    if entry not in sys.path:
+        sys.path.insert(0, entry)
 
-import tasks as T                                            # noqa: E402  （harness/ 在 sys.path）
+import tasks as T                                            # noqa: E402
 from baselines.predict import flatten_inputs, load, predict, predict_auto  # noqa: E402
 import preprocess as PRE                                     # noqa: E402
 
@@ -49,16 +50,33 @@ def main():
         print(f"    自动识别任务与显式指定一致：{'OK' if same else '不一致'}")
         ok = ok and same
 
-    # B 包的秩变换必须真的生效
+    # 交付位的模型必须"只依赖原始特征"：平台用自己的 predict 路径，不会施加我们的预处理
+    for task in T.TASKS:
+        m = load(task)
+        assert not (m.meta.get("preprocess") or {}), f"{task} 交付模型不该带外部预处理"
     b = load("B")
     row = heads("B", 1)[0]
     paths, values = flatten_inputs(row["inputs"])
     x = np.asarray([values], dtype=np.float64)
-    x_rank = PRE.transform_inputs(b.meta, x)
-    p_rank, p_raw = float(b.predict(x_rank)[0]), float(b.predict(x)[0])
-    print(f"B 秩变换：{np.round(x[0][:3], 4)} -> {np.round(x_rank[0][:3], 4)}；"
-          f"pred 秩={p_rank:.2f} / pred 原始={p_raw:.2f}")
-    ok = ok and abs(p_rank - p_raw) > 1e-9
+    x_after = PRE.transform_inputs(b.meta, x)
+    same = np.allclose(x, x_after)
+    p = float(b.predict(x)[0])
+    print(f"B 交付模型：无外部预处理={same}；pred={p:.2f}（若被夹到 0 就说明用错了模型）")
+    ok = ok and same and p > 0
+
+    # 秩档案仍在，且确实需要变换才可用（比值差异巨大 → 证明当初不能直接换名）
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("_vB", T.VENDOR_ROOT / "B" / "model.py")
+    vB = importlib.util.module_from_spec(spec)
+    sys.modules["_vB"] = vB
+    spec.loader.exec_module(vB)
+    rank_ckpt = T.checkpoint_path("B", "checkpoint_rank.npz")
+    if rank_ckpt.exists():
+        tm = vB.Model.load(rank_ckpt)
+        p_rank = float(tm.predict(PRE.transform_inputs(tm.meta, x))[0])
+        p_raw = float(tm.predict(x)[0])
+        print(f"B 秩档案：变换后 pred={p_rank:.2f} / 直接喂原始特征 pred={p_raw:.2f}")
+        ok = ok and abs(p_rank - p_raw) > 1.0
 
     print("结果：" + ("通过" if ok else "失败"))
     return 0 if ok else 1

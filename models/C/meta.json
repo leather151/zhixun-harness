@@ -9,7 +9,7 @@
   "target_unit": "cycles",
   "hidden": 32,
   "parameter_count": 833,
-  "default_checkpoint": "checkpoint_best.npz",
+  "default_checkpoint": "checkpoint.npz",
   "checkpoint_sha256": "sha256:8e64049dc8d5e6e920f5311f539e4e10a4c5741a739099cd040bb02b41a09d96",
   "checkpoint_bytes": 29528,
   "preprocess": "none",

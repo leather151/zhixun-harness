@@ -334,14 +334,19 @@ def load_vendor(task, need_train=False):
 
 
 def checkpoint_path(task, name=None):
-    """默认起点/交付模型：优先用优化后的检查点，其次是官方起点。
+    """交付/起点检查点。
 
-    优先级：checkpoint_best.npz → checkpoint_rank.npz（含秩分位表的改进版）→ checkpoint.npz（官方起点）
+    优先级：`checkpoint.npz` → `checkpoint_best.npz` → `checkpoint_rank.npz`。
+
+    **为什么 checkpoint.npz 排第一**：平台评测读的就是这个文件名，而且用它自己的
+    `Model.predict(原始特征)` 推理（不施加我们 metadata 里的预处理）。所以"交付位"必须是
+    平台能直接用的那个模型；`checkpoint_best.npz` / `checkpoint_rank.npz` 只作为
+    **内部实验档案**保留（后者是秩变换模型，脱离分位表就不可用，见 实验日志 §13）。
     """
     root = MODEL_ROOT / task
     if name:
         return root / name
-    for candidate in ("checkpoint_best.npz", "checkpoint_rank.npz", "checkpoint.npz"):
+    for candidate in ("checkpoint.npz", "checkpoint_best.npz", "checkpoint_rank.npz"):
         if (root / candidate).exists():
             return root / candidate
     return root / "checkpoint.npz"

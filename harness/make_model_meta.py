@@ -11,7 +11,7 @@ ROOT = Path(r"D:\pycharm\competition\models")
 
 SPEC = {
     "A": {
-        "default_checkpoint": "checkpoint_best.npz",
+        "default_checkpoint": "checkpoint.npz",
         "kind": "classification",
         "feature_count": 128,
         "input_path_hint": "inputs.features[0..127]",
@@ -21,18 +21,20 @@ SPEC = {
         "recipe": "原始特征 · 类别权重 sqrt · wd=0 · epochs=2",
     },
     "B": {
-        "default_checkpoint": "checkpoint_rank.npz",
+        "default_checkpoint": "checkpoint.npz",
         "kind": "regression",
         "feature_count": 34,
         "input_path_hint": "inputs.horizontal[0..16], inputs.vertical[0..16]",
         "classes": [],
         "units": "minutes",
-        "validation": {"rmse": 369.47, "mae": 301.34, "bias": -110.3, "pearson_r": 0.655,
-                       "note": "官方 validation.jsonl；对照常值基线 RMSE 470.9"},
-        "recipe": "秩变换(ECDF,201分位,仅train拟合) + 按轴承等权 + 随机初始化 + wd=1e-2 + epochs=2",
+        "validation": {"rmse": 536.82, "mae": 440.42, "bias": -271.71, "pearson_r": 0.16,
+                       "note": "官方 validation.jsonl；官方基线 681.16 / 563.11。这是"
+                               "「原始特征即可推理」的蒸馏版；秩模型 369.47 依赖外部秩变换，"
+                               "平台评测路径不施加，故只作内部档案 checkpoint_rank.npz"},
+        "recipe": "蒸馏自秩模型 · hidden=128 · 域内合成监督(27.7 万行,含跨轴承水平偏移增强) · 无外部预处理",
     },
     "C": {
-        "default_checkpoint": "checkpoint_best.npz",
+        "default_checkpoint": "checkpoint.npz",
         "kind": "regression",
         "feature_count": 24,
         "input_path_hint": "inputs.settings[0..2], inputs.sensors[0..20]",

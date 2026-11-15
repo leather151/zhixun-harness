@@ -29,9 +29,15 @@
     "exit_code": {"success": 0, "selftest_fail": 1, "note": "闭环即使因外部原因未跑成，只要交付产物已落盘也返回 0，失败原因写入 /model/<TASK>/manifest.json 的 failure 字段"}
   },
   "tasks": {
-    "A": {"kind": "classification", "classes": ["Ethanol", "Ethylene", "Ammonia", "Acetaldehyde", "Acetone", "Toluene"], "n_features": 128, "primary_metric": "macro_f1", "checkpoint": "/app/models/A/checkpoint_best.npz"},
-    "B": {"kind": "regression", "unit": "minutes", "n_features": 34, "primary_metric": "rmse", "checkpoint": "/app/models/B/checkpoint_rank.npz"},
-    "C": {"kind": "regression", "unit": "cycles", "n_features": 24, "primary_metric": "rmse", "checkpoint": "/app/models/C/checkpoint_best.npz"}
+    "A": {"kind": "classification", "classes": ["Ethanol", "Ethylene", "Ammonia", "Acetaldehyde", "Acetone", "Toluene"], "n_features": 128, "primary_metric": "macro_f1", "checkpoint": "/app/models/A/checkpoint.npz"},
+    "B": {"kind": "regression", "unit": "minutes", "n_features": 34, "primary_metric": "rmse", "checkpoint": "/app/models/B/checkpoint.npz"},
+    "C": {"kind": "regression", "unit": "cycles", "n_features": 24, "primary_metric": "rmse", "checkpoint": "/app/models/C/checkpoint.npz"}
+  },
+  "delivery_slot": {
+    "path": "/app/models/<TASK>/checkpoint.npz",
+    "why": "平台评测读这个文件名，并用它自己的 Model.predict(原始特征) 推理，不施加 metadata 里的预处理",
+    "consequence": "交付位上的模型必须只依赖原始特征；依赖外部秩变换的模型（models/B/checkpoint_rank.npz, RMSE 369.47）只能作内部档案与蒸馏教师",
+    "archives": ["/app/models/<TASK>/checkpoint_official_baseline.npz", "/app/models/B/checkpoint_rank.npz"]
   },
   "predict": {
     "recommended": "HARNESS_MODE=serve python -u /app/harness/entry.py",
@@ -73,7 +79,7 @@
       "select": "metadata.preprocess = {kind:'select', feature_index:[...]}：推理前先按索引选列"
     },
     "per_task_sidecar": "/app/models/<TASK>/meta.json",
-    "note": "B 的检查点带 rank 预处理，必须走 /app/harness/preprocess.py 的同一张表；A/C 无预处理"
+    "note": "交付位 /app/models/<TASK>/checkpoint.npz 必须只依赖原始特征（平台不施加预处理）；B 的 rank 模型仅作档案与蒸馏教师"
   },
   "policy": {
     "default": "rule",
