@@ -59,10 +59,23 @@ def table_from_meta(meta):
     return np.asarray(pre["quantiles"], dtype=np.float64)
 
 
+def feature_index_from_meta(meta):
+    """模型若做过特征筛选，返回保留的列下标；否则 None。"""
+    if not isinstance(meta, dict):
+        return None
+    pre = meta.get("preprocess") or {}
+    idx = pre.get("feature_index")
+    return None if idx is None else np.asarray(idx, dtype=int)
+
+
 def transform_inputs(model_meta, x):
-    """按模型自带的分位表变换输入；模型没有预处理就是恒等。"""
+    """按模型自带预处理变换输入：先按 feature_index 选列，再做秩变换（若有）。"""
+    x = np.asarray(x, dtype=np.float64)
+    idx = feature_index_from_meta(model_meta)
+    if idx is not None:
+        x = x[:, idx]
     table = table_from_meta(model_meta)
-    return np.asarray(x, dtype=np.float64) if table is None else apply_rank(table, x)
+    return x if table is None else apply_rank(table, x)
 
 
 def transform_jsonl_line(line, table):
