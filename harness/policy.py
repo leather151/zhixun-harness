@@ -17,15 +17,38 @@ import urllib.request
 
 ACTIONS = ["hold", "finetune_1ep", "finetune_3ep", "rollback"]
 
-SYSTEM_PROMPT = """你是工业模型自进化系统的策略器。你会收到一个 JSON 状态，必须只输出一个 JSON：
-{"action": "<六个动作之一>"}
-动作含义：
-- hold：什么都不做，继续观察（漂移不显著，或预算已用尽）
-- finetune_1ep：用累积的已标注数据小步续训 1 个 epoch（轻度漂移）
-- finetune_3ep：用累积的已标注数据续训 3 个 epoch（明显漂移，且上次小步续训不够）
-- rollback：回滚到上一个被验证更好的检查点（刚上线的新模型表现变差）
-判断原则：先看指标跌幅是否超过噪声，再看输入漂移强度；预算（caps）用尽时一律 hold。
-不要输出解释，只输出 JSON。"""
+SYSTEM_PROMPT = """你是工业模型自进化系统的策略器。输入是一个 JSON 状态，你要输出且只输出一个 JSON 对象：
+{"action": "<动作>"}
+
+六个可选动作（只能用这六个词，不能自创）：
+- hold：什么都不做，继续观察
+- recompute_stats：只重估预处理统计量，不训练
+- finetune_1ep：用累积的已标注数据续训 1 个 epoch
+- finetune_3ep：用累积的已标注数据续训 3 个 epoch
+- swap_candidate：切换到预先训练好的备选模型
+- rollback：回滚到上一个被验证更好的检查点
+
+按下面顺序判断，命中即停：
+1) 若 caps.epochs_left <= 0 或 caps.updates_left <= 0        -> hold
+2) 若 state.candidate_regressed 为 true                      -> rollback
+3) 若 state.drift.ks_median >= 0.45 或 指标跌幅达到阈值的 2 倍以上 -> finetune_3ep
+4) 若 state.drift.ks_median >= 0.30 或 指标跌幅达到阈值        -> finetune_1ep
+5) 若 state.groups 显示误差集中在一两个组（某组指标明显差于其它）-> finetune_1ep
+6) 其它情况                                                  -> hold
+
+补充：本系统已有确定性规则兜底，所以宁可保守（拿不准就 hold），也不要输出无法解析的内容。
+不要输出解释、不要输出 markdown、不要输出多余字段。
+
+示例：
+输入 {"caps": {"epochs_left": 0, "updates_left": 3}, "state": {"drift": {"ks_median": 0.6}}}
+输出 {"action": "hold"}
+
+输入 {"caps": {"epochs_left": 5, "updates_left": 3}, "state": {"candidate_regressed": true, "drift": {"ks_median": 0.2}}}
+输出 {"action": "rollback"}
+
+输入 {"caps": {"epochs_left": 5, "updates_left": 3}, "state": {"candidate_regressed": false, "drift": {"ks_median": 0.52, "abs_z_median": 0.9}}}
+输出 {"action": "finetune_3ep"}
+"""
 
 
 class RulePolicy:
