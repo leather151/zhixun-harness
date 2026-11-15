@@ -1,4 +1,10 @@
-"""验证 /previous 父检查点解析与 /model 交付目录（不跑完整闭环，先打两个函数）。"""
+"""验证 /previous 父检查点解析 + 交付目录（2026-11-15 平台试运行后修正后的规则）。
+
+规则变了：**镜像自带模型优先**，`/previous`（平台父模型）只在镜像里没有该任务模型时兜底。
+理由是平台每轮记录写着「retained the platform parent; no candidate was trained」——
+它把自己的父模型挂 /previous，若让它优先，闭环就会从那个更弱的父模型起步，
+没有挑战者上线时又把它原样交回去，白白丢掉镜像里已优化好的模型。
+"""
 import shutil
 import sys
 import tempfile
@@ -21,48 +27,48 @@ tmp = Path(tempfile.mkdtemp(prefix="prev-"))
 print("tmp =", tmp)
 
 # 1) 什么都没挂 → 用内置交付模型
-print("无 /previous：", runner.resolve_start_checkpoint("C", A()))
-assert runner.resolve_start_checkpoint("C", A())[1] == "bundled"
+path, origin = runner.resolve_start_checkpoint("C", A())
+print("无 /previous：", path, origin)
+assert origin == "bundled" and path == T.checkpoint_path("C")
 
-# 2) /previous 是目录，里面有 checkpoint.npz
-shutil.copy2(T.checkpoint_path("C"), tmp / "checkpoint.npz")
+# 2) /previous 挂着平台父模型 → **仍然用内置交付模型**，但在 origin 里标出来
+shutil.copy2(T.MODEL_ROOT / "C" / "checkpoint_official_baseline.npz", tmp / "checkpoint.npz")
 a = A(); a.previous = str(tmp)
 path, origin = runner.resolve_start_checkpoint("C", a)
-print("目录布局：", path, origin)
-assert origin == "previous" and path.name == "checkpoint.npz"
+print("有 /previous：", path, origin)
+assert path == T.checkpoint_path("C"), "平台父模型不应覆盖镜像自带交付模型"
+assert "platform parent" in origin
 
-# 3) /previous 是单文件
+# 3) /previous 是单文件（也不该改变选择）
 a = A(); a.previous = str(tmp / "checkpoint.npz")
 path, origin = runner.resolve_start_checkpoint("C", a)
-print("单文件布局：", path, origin)
-assert origin == "previous"
+print("单文件 /previous：", path, origin)
+assert path == T.checkpoint_path("C")
 
-# 4) 平台自定义布局 <TASK>/checkpoint.npz
-(tmp / "C").mkdir()
-shutil.move(str(tmp / "checkpoint.npz"), str(tmp / "C" / "checkpoint.npz"))
-a = A(); a.previous = str(tmp)
-path, origin = runner.resolve_start_checkpoint("C", a)
-print("子目录布局：", path, origin)
-assert origin == "previous" and path.parent.name == "C"
+# 4) 镜像里没有该任务模型时，/previous 才兜底
+import runner as R
+orig = R.T.checkpoint_path
+R.T.checkpoint_path = lambda task, name=None: tmp / "nope" / "checkpoint.npz"
+try:
+    (tmp / "sub").mkdir()
+    shutil.copy2(APP / "models" / "C" / "checkpoint.npz", tmp / "sub" / "model.npz")
+    a = A(); a.previous = str(tmp)
+    path, origin = R.resolve_start_checkpoint("C", a)
+    print("兜底 /previous：", path, origin)
+    assert origin == "previous" and path.is_file()
+finally:
+    R.T.checkpoint_path = orig
 
-# 5) 随机子目录（兜底 rglob）
-(tmp / "weird" / "nested").mkdir(parents=True)
-shutil.move(str(tmp / "C" / "checkpoint.npz"), str(tmp / "weird" / "nested" / "model.npz"))
-a = A(); a.previous = str(tmp)
-path, origin = runner.resolve_start_checkpoint("C", a)
-print("兜底扫描：", path, origin)
-assert origin == "previous" and path.name == "model.npz"
-
-# 6) --checkpoint 优先级最高
-a = A(); a.checkpoint = str(APP / "models" / "C" / "checkpoint_best.npz"); a.previous = str(tmp)
+# 5) --checkpoint 优先级最高
+a = A(); a.checkpoint = str(APP / "models" / "C" / "checkpoint.npz"); a.previous = str(tmp)
 print("显式 --checkpoint：", runner.resolve_start_checkpoint("C", a))
 assert runner.resolve_start_checkpoint("C", a)[1] == "cli"
 
-# 7) model_out_root 可写性探测
+# 6) model_out_root 可写性探测
 mo = tmp / "model-out"
 a = A(); a.model_out = str(mo)
-print("model_out_root：", runner.model_out_root(a))
 assert runner.model_out_root(a) == mo
+print("model_out_root：", runner.model_out_root(a))
 
 print("全部通过")
 shutil.rmtree(tmp, ignore_errors=True)

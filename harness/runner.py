@@ -91,22 +91,32 @@ def previous_root(args=None):
 
 
 def resolve_start_checkpoint(task, args):
-    """起点检查点：显式 --checkpoint > /previous 挂载的父模型 > 镜像内交付模型。"""
+    """起点检查点：显式 --checkpoint > **镜像自带交付模型** > /previous。
+
+    **为什么自带模型优先于 /previous**（2026-11-15 平台试运行后修正）：
+    平台的每轮记录写着「retained the platform parent; no candidate was trained」——
+    它把**自己的父模型**挂到 `/previous`。而我们原来让 `/previous` 优先，于是闭环从平台的
+    （更弱的）父模型起步，没有挑战者上线时就把这个父模型当成交付产物原样交回去，
+    等于主动放弃了镜像里已经优化好的模型。镜像里的是我们自己选定的交付模型，
+    应当默认用它；`/previous` 只在镜像里没有该任务模型时兜底，并记录进 manifest 供审计。
+    """
     if args.checkpoint:
         return Path(args.checkpoint), "cli"
-    root = previous_root(args)
-    if root is not None:
-        if root.is_file() and root.suffix == ".npz":
-            return root, "previous"
+    bundled = T.checkpoint_path(task)
+    prev = previous_root(args)
+    if bundled.is_file():
+        return bundled, ("bundled" if prev is None else "bundled(platform parent present)")
+    if prev is not None:
+        if prev.is_file() and prev.suffix == ".npz":
+            return prev, "previous"
         for pattern in PREVIOUS_CANDIDATES:
-            cand = root / pattern.format(task=task)
+            cand = prev / pattern.format(task=task)
             if cand.is_file():
                 return cand, "previous"
-        # 再兜底扫一层（防止平台把文件放在随机子目录里）
-        for cand in sorted(root.rglob("*.npz")):
+        for cand in sorted(prev.rglob("*.npz")):
             if cand.is_file():
                 return cand, "previous"
-    return T.checkpoint_path(task), "bundled"
+    return bundled, "bundled-missing"
 
 
 def model_out_root(args=None):
@@ -355,6 +365,8 @@ def run(task, args, cfg):
         "sha256": "sha256:" + hashlib.sha256(final_ckpt.read_bytes()).hexdigest(),
         "parent_checkpoint": str(ckpt_stack[0]),
         "parent_origin": ckpt_origin,
+        # 平台挂进来的父模型只作审计记录；交付默认用镜像内自己选定的模型
+        "platform_parent": (lambda r: str(r) if r is not None else None)(previous_root(args)),
         "stream_mode": mode,
         "policy": args.policy,
         "primary": primary,

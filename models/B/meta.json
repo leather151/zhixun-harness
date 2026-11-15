@@ -10,22 +10,22 @@
   "hidden": 128,
   "parameter_count": 4609,
   "default_checkpoint": "checkpoint.npz",
-  "checkpoint_sha256": "sha256:2e1f83028af5d069ef02b1d0f96a060644f9b332af0ff398036fc09aa7b94605",
-  "checkpoint_bytes": 127764,
+  "checkpoint_sha256": "sha256:e503fa5860fa82e48db207c0355d7f3ecaf85f2c02c251ed78d11358431f2526",
+  "checkpoint_bytes": 129144,
   "preprocess": "none",
   "target_scaling": {
     "mean": 816.6404393782431,
-    "scale": 509.1348004583209
+    "scale": 300.38953227040935
   },
   "seed": 42,
   "validation": {
-    "rmse": 536.82,
-    "mae": 440.42,
-    "bias": -271.71,
-    "pearson_r": 0.16,
-    "note": "官方 validation.jsonl；官方基线 681.16 / 563.11。这是「原始特征即可推理」的蒸馏版；秩模型 369.47 依赖外部秩变换，平台评测路径不施加，故只作内部档案 checkpoint_rank.npz"
+    "rmse": 471.2,
+    "mae": 411.06,
+    "bias": -108.33,
+    "pearson_r": 0.172,
+    "note": "官方 validation.jsonl；官方基线 681.16 / 563.11，常数预测器 483.00。这是「原始特征即可推理」的蒸馏版 + 方差收缩 α=0.59（取自 train 内部留出相关系数）；秩模型 369.47 依赖外部秩变换，平台不施加，只作教师档案"
   },
-  "recipe": "蒸馏自秩模型 · hidden=128 · 域内合成监督(27.7 万行,含跨轴承水平偏移增强) · 无外部预处理",
+  "recipe": "蒸馏自秩模型 · hidden=128 · 域内合成监督(27.7 万行) · 方差收缩 α=0.59 · 无外部预处理",
   "compliance": [
     "validation 只测不改",
     "预处理仅在 train 上拟合",

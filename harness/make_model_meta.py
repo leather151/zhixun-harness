@@ -27,11 +27,12 @@ SPEC = {
         "input_path_hint": "inputs.horizontal[0..16], inputs.vertical[0..16]",
         "classes": [],
         "units": "minutes",
-        "validation": {"rmse": 536.82, "mae": 440.42, "bias": -271.71, "pearson_r": 0.16,
-                       "note": "官方 validation.jsonl；官方基线 681.16 / 563.11。这是"
-                               "「原始特征即可推理」的蒸馏版；秩模型 369.47 依赖外部秩变换，"
-                               "平台评测路径不施加，故只作内部档案 checkpoint_rank.npz"},
-        "recipe": "蒸馏自秩模型 · hidden=128 · 域内合成监督(27.7 万行,含跨轴承水平偏移增强) · 无外部预处理",
+        "validation": {"rmse": 471.2, "mae": 411.06, "bias": -108.33, "pearson_r": 0.172,
+                       "note": "官方 validation.jsonl；官方基线 681.16 / 563.11，"
+                               "常数预测器 483.00。这是「原始特征即可推理」的蒸馏版 + "
+                               "方差收缩 α=0.59（取自 train 内部留出相关系数）；"
+                               "秩模型 369.47 依赖外部秩变换，平台不施加，只作教师档案"},
+        "recipe": "蒸馏自秩模型 · hidden=128 · 域内合成监督(27.7 万行) · 方差收缩 α=0.59 · 无外部预处理",
     },
     "C": {
         "default_checkpoint": "checkpoint.npz",
