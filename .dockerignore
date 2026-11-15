@@ -3,6 +3,8 @@
 runs/
 results/
 src/
+tests/
+提交材料/
 __pycache__/
 *.pyc
 *.joblib

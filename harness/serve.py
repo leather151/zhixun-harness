@@ -9,91 +9,52 @@
     regression     -> {"outputs": {"value": 12.3}}
     classification -> {"outputs": [{"label": "Ethanol", "score": 0.9}, ...]}
 
-自动识别任务（按特征维度/字段名）：A=128 维 features；B=34 维（horizontal/vertical）；C=24 维（settings/sensors）。
+实现说明：真正的加载/预处理/预测逻辑在 `baselines/predict.py`（与 /app/baselines 同一份契约），
+这里只做"管道 + 错误兜底"，避免两处实现漂移：
+- 自动识别任务（A=128 维 features；B=34 维 horizontal/vertical；C=24 维 settings/sensors）；
+- 自动施加检查点自带的预处理（B 包的秩变换分位表）；
+- 三条任务流共用一个进程也不会互相污染（vendor 模块按唯一名加载）。
 """
 from __future__ import annotations
 
 import argparse
-import hashlib
 import io
 import json
 import sys
 from pathlib import Path
 
-import numpy as np
-
 HERE = Path(__file__).resolve().parent
-if str(HERE) not in sys.path:
-    sys.path.insert(0, str(HERE))
-
-import tasks as T   # noqa: E402
-
 PROJECT = HERE.parent
+for entry in (str(HERE), str(PROJECT)):
+    if entry not in sys.path:
+        sys.path.insert(0, entry)
 
-
-def detect_task(paths):
-    """按官方 flatten 出来的字段路径识别任务。"""
-    joined = "|".join(paths)
-    n = len(paths)
-    if "horizontal" in joined and "vertical" in joined:
-        return "B"
-    if "settings" in joined and "sensors" in joined:
-        return "C"
-    if "features" in joined and n == 128:
-        return "A"
-    if n == 128:
-        return "A"
-    if n == 34:
-        return "B"
-    if n == 24:
-        return "C"
-    raise ValueError(f"无法识别的输入结构（{n} 个特征）：{joined[:200]}")
+from baselines import predict as BP            # noqa: E402  （BP 是模块，不是函数）
 
 
 class Server:
+    """兼容旧的调用方式：`Server().handle({"inputs": {...}})`。"""
+
     def __init__(self, model_root=None):
-        self.model_root = Path(model_root) if model_root else T.MODEL_ROOT
-        self._models = {}
-
-    def _resolve(self, task):
-        """按与 harness 一致的优先级挑检查点（优化版优先，官方起点兜底）。"""
-        root = self.model_root / task
-        for name in ("checkpoint_best.npz", "checkpoint_rank.npz", "checkpoint.npz"):
-            path = root / name
-            if path.exists():
-                return path
-        raise FileNotFoundError(f"缺少模型：{root}/checkpoint*.npz")
-
-    def model(self, task):
-        if task not in self._models:
-            import importlib
-            vdir = T.VENDOR_ROOT / task
-            if str(vdir) not in sys.path:
-                sys.path.insert(0, str(vdir))
-            mod = importlib.import_module("model")
-            ckpt = self._resolve(task)
-            self._models[task] = mod.Model.load(ckpt)
-        return self._models[task]
+        self.model_root = Path(model_root) if model_root else BP.MODEL_ROOT
+        if model_root:
+            BP.MODEL_ROOT = self.model_root
 
     def handle(self, request):
         inputs = request.get("inputs")
         if not isinstance(inputs, dict):
             raise ValueError("请求必须包含 inputs 对象")
-        paths, values = T.flatten_inputs(inputs)
-        task = detect_task(paths)
-        model = self.model(task)
-        if paths != model.meta["paths"]:
-            raise ValueError(f"特征 schema 与检查点不一致（识别为 {task} 包）")
-        out = model.predict(T.model_inputs(model, np.asarray([values], dtype=np.float64)))[0]
-        if model.meta["task"] == "regression":
-            return {"outputs": {"value": float(out)}}
-        return {"outputs": [{"label": label, "score": float(score)}
-                            for label, score in zip(model.meta["classes"], out)]}
+        task = request.get("task")
+        if task in ("A", "B", "C"):
+            return BP.predict(BP.load(task), inputs)
+        return BP.predict_auto(inputs)
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="官方 predict.py 协议的常驻推理端")
-    ap.add_argument("--model-root", default=None, help="默认 models/<A|B|C>/checkpoint.npz")
+    ap.add_argument("--model-root", default=None, help="默认 models/<A|B|C>/checkpoint*.npz")
+    ap.add_argument("--checkpoint", default=None, help="指定单一检查点（仍自动识别任务）")
+    ap.add_argument("--task", default=None, choices=["A", "B", "C"], help="固定任务（跳过识别）")
     ap.add_argument("--echo-task", action="store_true", help="在响应里附带识别出的任务名（调试用）")
     args = ap.parse_args(argv)
 
@@ -105,15 +66,22 @@ def main(argv=None):
     stream = io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8-sig", errors="replace")
 
     server = Server(args.model_root)
+    fixed = None
+    if args.task or args.checkpoint:
+        fixed = BP.load(task=args.task, checkpoint=args.checkpoint)
+
     for line in stream:
         line = line.strip().lstrip("\ufeff")
         if not line:
             continue
         try:
             request = json.loads(line)
-            result = server.handle(request)
+            inputs = request.get("inputs") if isinstance(request, dict) else None
+            if not isinstance(inputs, dict):
+                raise ValueError("请求必须包含 inputs 对象")
+            result = BP.predict(fixed, inputs)
             if args.echo_task:
-                result["_task"] = detect_task(T.flatten_inputs(request.get("inputs", {}))[0])
+                result["_task"] = BP.detect_task(BP.flatten_inputs(inputs)[0])
             print(json.dumps(result, ensure_ascii=False, allow_nan=False), flush=True)
         except Exception as exc:                              # noqa: BLE001
             print(json.dumps({"error": f"{type(exc).__name__}: {exc}"}, ensure_ascii=False),

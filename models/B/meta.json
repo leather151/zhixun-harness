@@ -1,0 +1,40 @@
+{
+  "task": "B",
+  "kind": "regression",
+  "profile": "B",
+  "format": "contest.cpu-mlp.v1",
+  "feature_count": 34,
+  "input_path_hint": "inputs.horizontal[0..16], inputs.vertical[0..16]",
+  "classes": [],
+  "target_unit": "minutes",
+  "hidden": 24,
+  "parameter_count": 865,
+  "default_checkpoint": "checkpoint_rank.npz",
+  "checkpoint_sha256": "sha256:ae4dc135327fca34c4cecedcc9cd8fad5b1c49a847362127b29d35309395a686",
+  "checkpoint_bytes": 319564,
+  "preprocess": {
+    "kind": "rank",
+    "n_quantiles": 201,
+    "fitted_on": "official train.jsonl only",
+    "stored_in": "checkpoint metadata.preprocess.quantiles"
+  },
+  "target_scaling": {
+    "mean": 954.1505972696245,
+    "scale": 785.2301498010885
+  },
+  "seed": 42,
+  "validation": {
+    "rmse": 369.47,
+    "mae": 301.34,
+    "bias": -110.3,
+    "pearson_r": 0.655,
+    "note": "官方 validation.jsonl；对照常值基线 RMSE 470.9"
+  },
+  "recipe": "秩变换(ECDF,201分位,仅train拟合) + 按轴承等权 + 随机初始化 + wd=1e-2 + epochs=2",
+  "compliance": [
+    "validation 只测不改",
+    "预处理仅在 train 上拟合",
+    "id/meta 不进模型输入",
+    "不自造标签"
+  ]
+}

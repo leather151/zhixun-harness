@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -58,6 +59,73 @@ def better(spec, cand_value, base_value, margin=0.0):
     return cand_value <= base_value - margin
 
 
+def gate_margin(cfg, task):
+    """守门门槛：允许按任务给绝对值（RMSE 用分钟/循环，F1 用比例），也兼容单个数字。"""
+    margin = (cfg.get("gate") or {}).get("margin", 0.0)
+    if isinstance(margin, dict):
+        margin = margin.get(task, margin.get("default", 0.0))
+    return float(margin)
+
+
+# ------------------------------------------------------- 父检查点（/previous）
+
+# 平台可能把"上一轮交付的模型"挂到 /previous（目录或单文件），命名不固定，
+# 这里按常见布局逐个探测。找不到就回落到镜像内自带的 models/<TASK>/。
+PREVIOUS_CANDIDATES = (
+    "checkpoint.npz", "checkpoint_best.npz", "checkpoint_rank.npz",
+    "model/checkpoint.npz", "model/checkpoint_best.npz",
+    "output/model/{task}/checkpoint.npz",
+    "model/{task}/checkpoint.npz",
+    "{task}/checkpoint.npz", "{task}/checkpoint_best.npz",
+    "models/{task}/checkpoint.npz", "models/{task}/checkpoint_best.npz",
+)
+
+
+def previous_root(args=None):
+    """`/previous` 的实际位置：命令行 > 环境变量 > 约定的 /previous。"""
+    for cand in (getattr(args, "previous", None), os.environ.get("HARNESS_PREVIOUS"),
+                 "/previous"):
+        if cand and Path(cand).exists():
+            return Path(cand)
+    return None
+
+
+def resolve_start_checkpoint(task, args):
+    """起点检查点：显式 --checkpoint > /previous 挂载的父模型 > 镜像内交付模型。"""
+    if args.checkpoint:
+        return Path(args.checkpoint), "cli"
+    root = previous_root(args)
+    if root is not None:
+        if root.is_file() and root.suffix == ".npz":
+            return root, "previous"
+        for pattern in PREVIOUS_CANDIDATES:
+            cand = root / pattern.format(task=task)
+            if cand.is_file():
+                return cand, "previous"
+        # 再兜底扫一层（防止平台把文件放在随机子目录里）
+        for cand in sorted(root.rglob("*.npz")):
+            if cand.is_file():
+                return cand, "previous"
+    return T.checkpoint_path(task), "bundled"
+
+
+def model_out_root(args=None):
+    """交付目录：优先 /model（容器约定），否则 <out>/model。不可写就退化为后者。"""
+    for cand in (getattr(args, "model_out", None), os.environ.get("HARNESS_MODEL_OUT"), "/model"):
+        if not cand:
+            continue
+        root = Path(cand)
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            probe = root / ".write_probe"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink()
+            return root
+        except OSError:
+            continue
+    return None
+
+
 # ------------------------------------------------------------------ 主循环
 
 def run(task, args, cfg):
@@ -66,7 +134,9 @@ def run(task, args, cfg):
     mode = args.stream
     if mode == "auto":
         root = Path(args.data_root) if args.data_root else T.DATA_ROOT
-        mode = "official" if (root / spec["dir"] / "validation.jsonl").exists() else "train"
+        # 目录名可能是中文（官方原始布局）或 ASCII（镜像内 public 副本），两种都要认
+        cands = [root / spec["dir"], root / task]
+        mode = "official" if any((c / "validation.jsonl").is_file() for c in cands) else "train"
     stream = T.build_stream(task, mode, args.windows, args.data_root)
     windows = stream["windows"]
     history = stream["history"]
@@ -82,12 +152,20 @@ def run(task, args, cfg):
                                  "primary": primary, "caps": cfg["caps"],
                                  "policy_cfg": cfg["policy"]})
 
-    start_ckpt = Path(args.checkpoint) if args.checkpoint else T.checkpoint_path(task)
+    start_ckpt, ckpt_origin = resolve_start_checkpoint(task, args)
     if not start_ckpt.exists():
         raise FileNotFoundError(f"起点检查点不存在：{start_ckpt}")
+    print(f"[{task}] 起点检查点（来源 {ckpt_origin}）：{start_ckpt}")
 
     # 漂移参照：起点模型在"历史数据"上的预测分布（抽样子集，保证大包也快）
-    base_model = T.load_model(task, start_ckpt)
+    try:
+        base_model = T.load_model(task, start_ckpt)
+    except Exception as exc:                                 # noqa: BLE001
+        # 平台挂进来的父模型若与本任务 schema 不符/损坏，不能直接崩，回落到镜像自带模型
+        fallback = T.checkpoint_path(task)
+        print(f"[{task}] 父检查点不可用（{type(exc).__name__}: {exc}）→ 回落 {fallback}")
+        start_ckpt, ckpt_origin = fallback, "bundled-fallback"
+        base_model = T.load_model(task, start_ckpt)
     ref_sub = subsample(ref, 20000)
     ref_x = ref_sub["x"]
     ref_pred = base_model.predict(subsample(ref, 4000)["x"])
@@ -104,6 +182,7 @@ def run(task, args, cfg):
     t_start = time.monotonic()
     caps = dict(cfg["caps"])
     caps["max_windows"] = min(caps["max_windows"], len(windows))
+    margin = gate_margin(cfg, task)
 
     # 更新用的"已标注缓冲"落盘位置（只装 train 内部的行）
     buffer_path = outdir / "buffer.jsonl"
@@ -126,7 +205,7 @@ def run(task, args, cfg):
         if pending is not None:
             ev_cand = T.evaluate(spec, T.load_model(task, pending["ckpt"]), window)
             cand_value = ev_cand["metrics"][primary]
-            promote = better(spec, cand_value, value, cfg["gate"]["margin"])
+            promote = better(spec, cand_value, value, margin)
             gate = {"window": index, "candidate": str(pending["ckpt"]),
                     "candidate_metric": cand_value, "incumbent_metric": value,
                     "promoted": bool(promote)}
@@ -269,9 +348,13 @@ def run(task, args, cfg):
         shutil.copy2(current, final_ckpt)
     manifest = {
         "task": task,
+        "kind": spec["kind"],
+        # 只有当闭环真的把某个挑战者推上线时才叫 evolved；否则交付的就是原封不动的内置模型
+        "origin": "evolved" if str(current) != str(start_ckpt) else "bundled",
         "checkpoint": str(final_ckpt),
         "sha256": "sha256:" + hashlib.sha256(final_ckpt.read_bytes()).hexdigest(),
         "parent_checkpoint": str(ckpt_stack[0]),
+        "parent_origin": ckpt_origin,
         "stream_mode": mode,
         "policy": args.policy,
         "primary": primary,
@@ -283,8 +366,24 @@ def run(task, args, cfg):
         "training_seconds": round(training_seconds, 3),
         "note": "由 harness 闭环产出的最终工业模型；逐轮证据见同目录 windows.jsonl / decisions.jsonl",
     }
+
+    # 平台约定：最终模型可能从 /model/<TASK>/ 取（而不是 /output）。两边都落一份。
+    delivered = [str(final_ckpt)]
+    root = model_out_root(args)
+    if root is not None:
+        extra = root / task
+        extra.mkdir(parents=True, exist_ok=True)
+        if Path(current).resolve() != (extra / "checkpoint.npz").resolve():
+            shutil.copy2(current, extra / "checkpoint.npz")
+        delivered.append(str(extra / "checkpoint.npz"))
+    manifest["delivered"] = delivered
+    manifest["sha256"] = "sha256:" + hashlib.sha256(final_ckpt.read_bytes()).hexdigest()
     (model_dir / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if root is not None:
+        (extra / "manifest.json").write_text(
+            json.dumps({**manifest, "checkpoint": str(extra / "checkpoint.npz")},
+                       ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     summary = {
         "task": task,
@@ -310,6 +409,8 @@ def run(task, args, cfg):
         "final_checkpoint": current,
         "artifact": str(final_ckpt),
         "artifact_sha256": manifest["sha256"],
+        "delivered": delivered,
+        "parent_origin": ckpt_origin,
         "caps": caps,
         "events": events,
         "swan": {"enabled": logger.swan is not None, "error": logger.swan_error,
@@ -390,6 +491,10 @@ def parse(argv=None):
     ap.add_argument("--llm-model", default=None)
     ap.add_argument("--llm-key", default=None)
     ap.add_argument("--checkpoint", default=None, help="覆盖起点检查点")
+    ap.add_argument("--previous", default=None,
+                    help="父检查点挂载位置（目录或 .npz）；容器内默认 /previous")
+    ap.add_argument("--model-out", default=None,
+                    help="交付目录根（容器内默认 /model；不可写则只落 <out>/model）")
     ap.add_argument("--data-root", default=None, help="官方数据根目录（含 A_气体传感器/...）")
     ap.add_argument("--out", default=str(HERE.parent / "runs"))
     ap.add_argument("--swan", default="auto", choices=["auto", "on", "off"])
@@ -409,6 +514,9 @@ def _argv_for(args, task):
             "--config", args.config]
     if args.data_root:
         argv += ["--data-root", args.data_root]
+    for flag, value in (("--previous", args.previous), ("--model-out", args.model_out)):
+        if value:
+            argv += [flag, value]
     if args.policy == "llm":
         for flag, value in (("--llm-endpoint", args.llm_endpoint),
                             ("--llm-model", args.llm_model), ("--llm-key", args.llm_key)):

@@ -1,0 +1,39 @@
+{
+  "task": "A",
+  "kind": "classification",
+  "profile": "A",
+  "format": "contest.cpu-mlp.v1",
+  "feature_count": 128,
+  "input_path_hint": "inputs.features[0..127]",
+  "classes": [
+    "Ethanol",
+    "Ethylene",
+    "Ammonia",
+    "Acetaldehyde",
+    "Acetone",
+    "Toluene"
+  ],
+  "target_unit": "",
+  "hidden": 32,
+  "parameter_count": 4326,
+  "default_checkpoint": "checkpoint_best.npz",
+  "checkpoint_sha256": "sha256:c9e1c2abce83e750f5dd25cf7c68b0b176ba71ab8a78e04639c7e466c77408a2",
+  "checkpoint_bytes": 132892,
+  "preprocess": "none",
+  "target_scaling": {
+    "mean": 0.0,
+    "scale": 1.0
+  },
+  "seed": 42,
+  "validation": {
+    "macro_f1": 0.7268,
+    "note": "官方 validation.jsonl，仅观测到的类别计入 Macro-F1（与官方口径一致）"
+  },
+  "recipe": "原始特征 · 类别权重 sqrt · wd=0 · epochs=2",
+  "compliance": [
+    "validation 只测不改",
+    "预处理仅在 train 上拟合",
+    "id/meta 不进模型输入",
+    "不自造标签"
+  ]
+}

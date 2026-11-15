@@ -1,0 +1,34 @@
+{
+  "task": "C",
+  "kind": "regression",
+  "profile": "C",
+  "format": "contest.cpu-mlp.v1",
+  "feature_count": 24,
+  "input_path_hint": "inputs.settings[0..2], inputs.sensors[0..20]",
+  "classes": [],
+  "target_unit": "cycles",
+  "hidden": 32,
+  "parameter_count": 833,
+  "default_checkpoint": "checkpoint_best.npz",
+  "checkpoint_sha256": "sha256:8e64049dc8d5e6e920f5311f539e4e10a4c5741a739099cd040bb02b41a09d96",
+  "checkpoint_bytes": 29528,
+  "preprocess": "none",
+  "target_scaling": {
+    "mean": 123.29161987461202,
+    "scale": 84.35774847417291
+  },
+  "seed": 42,
+  "validation": {
+    "rmse": 51.56,
+    "mae": 37.98,
+    "nasa_score": 3200000000.0,
+    "note": "官方 validation.jsonl；NASA 非对称评分，越小越好"
+  },
+  "recipe": "同初始化多轮打乱权重平均 · epochs=16 · 无预处理",
+  "compliance": [
+    "validation 只测不改",
+    "预处理仅在 train 上拟合",
+    "id/meta 不进模型输入",
+    "不自造标签"
+  ]
+}

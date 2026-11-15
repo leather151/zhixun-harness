@@ -24,7 +24,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HARNESS_DATA=/data \
     HARNESS_VENDOR=/app/vendor \
     HARNESS_MODELS=/app/models \
-    PYTHONPATH=/app/harness \
+    PYTHONPATH=/app:/app/harness \
     SWANLAB_MODE=disabled \
     OMP_NUM_THREADS=1 \
     OPENBLAS_NUM_THREADS=1 \
@@ -34,22 +34,27 @@ WORKDIR /app
 
 # 官方 CPU 基线代码（可由参赛者修改；保持 ASCII 目录名 A/B/C）
 COPY vendor /app/vendor
-# 官方起点检查点（父检查点指纹要能被 training.json 对上）
+# 官方起点检查点 + 每个任务的纯 JSON 摘要（models/<T>/meta.json，预检直接读）
 COPY models /app/models
+# 官方风格预测桥：baselines.predict.predict(model, inputs)（含 B 包的秩变换链路）
+COPY baselines /app/baselines
 # 闭环系统本体（监测/归因/策略/执行/守门/回滚/日志）
 COPY harness /app/harness
+# 适配契约：ADAPTER.md 给人看，CONTRACT.json 给机器读（预检只需这两个 + models/<T>/meta.json）
+COPY ADAPTER.md CONTRACT.json /app/
 # 公开数据（只读副本，仅用于离线自检；正式评测由 /data 挂载覆盖）
 COPY data/public /app/data/public
 
 RUN pip install --no-cache-dir -i "$PIP_INDEX" numpy==1.26.4 \
  && python -c "import numpy; print('numpy', numpy.__version__)" \
- && mkdir -p /output /work \
- && useradd -m -u 10001 runner && chown -R runner:runner /output /work
+ && PYTHONPATH=/app:/app/harness python -c "from baselines.predict import predict; print('baselines.predict OK')" \
+ && mkdir -p /output /work /model \
+ && useradd -m -u 10001 runner && chown -R runner:runner /output /work /model
 
 USER runner
 
-# 平台可挂载：/data（隐藏测试数据流）、/output（结果与最终模型落盘）
-VOLUME ["/data", "/output"]
+# 平台可挂载：/data（隐藏测试数据流）、/output（结果落盘）、/previous（父检查点）、/model（交付模型）
+VOLUME ["/data", "/output", "/previous", "/model"]
 
 # 秒级自检：检查 vendor/models/data 可达，并对每包跑 1 条真实样本推理
 HEALTHCHECK --interval=60s --timeout=30s --start-period=10s --retries=3 \
@@ -57,4 +62,6 @@ HEALTHCHECK --interval=60s --timeout=30s --start-period=10s --retries=3 \
 
 # 统一入口：HARNESS_MODE=loop（默认，自进化闭环）| serve（predict 管道）| selftest
 ENTRYPOINT ["python", "-u", "/app/harness/entry.py"]
-CMD ["--task", "all", "--stream", "auto", "--windows", "4", "--policy", "rule", "--swan", "off", "--out", "/output"]
+# 默认跑闭环：stream=train 才允许"读历史→做实验→上线/回滚"，官方 validation 始终只测不改；
+# policy=rule 是因为封闭评测没有外网（LLM 策略在有端点时用 --policy auto/llm 开启）。
+CMD ["--task", "all", "--stream", "train", "--windows", "4", "--policy", "rule", "--swan", "off", "--out", "/output"]
