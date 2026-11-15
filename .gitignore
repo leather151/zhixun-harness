@@ -20,3 +20,8 @@ src/swanlog/
 
 # 本地工具（免安装 gh 等，不入库）
 .tools/
+
+# PyTRiO SDK 隔离环境（体积大，重建见 提交材料/Sampler微调记录.md）
+.trio-env/
+# SAM 权重只存在 PyTRiO 云端；sft 语料（154 KB）入库作为可审计证据
+
