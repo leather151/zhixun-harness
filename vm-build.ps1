@@ -92,7 +92,8 @@ $stage = Join-Path $env:TEMP "zhixun-stage"
 Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $stage "data") | Out-Null
-foreach ($item in "harness", "vendor", "models", "Dockerfile", ".dockerignore", "vm-build.sh") {
+foreach ($item in "harness", "vendor", "models", "baselines", "Dockerfile", ".dockerignore",
+                  "ADAPTER.md", "CONTRACT.json", "vm-build.sh") {
     Copy-Item (Join-Path $PSScriptRoot $item) (Join-Path $stage $item) -Recurse -Force
 }
 Copy-Item (Join-Path $PSScriptRoot "data\public") (Join-Path $stage "data\public") -Recurse -Force

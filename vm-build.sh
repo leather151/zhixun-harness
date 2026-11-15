@@ -98,6 +98,28 @@ step "[vm 6/7] 容器内自检（三包各 1 条真实样本推理）"
 $SUDO docker run --rm -e HARNESS_MODE=selftest "$TAG" || die "容器内 selftest 失败"
 ok "自检通过"
 
+step "[vm 6b/7] 容器内跑一次默认 CMD（验证退出码 0 + 交付产物落盘）"
+LOOP_OUT=$(mktemp -d); LOOP_MODEL=$(mktemp -d)
+# 容器内是 runner(10001) 用户，挂载目录必须可写，否则验证的是权限错误而不是闭环
+$SUDO chmod 777 "$LOOP_OUT" "$LOOP_MODEL"
+if $SUDO docker run --rm -v "$LOOP_OUT:/output" -v "$LOOP_MODEL:/model" "$TAG" \
+        --task all --stream train --windows 2 --policy rule --swan off --out /output; then
+  ok "默认 CMD 退出码 0"
+else
+  echo "  [WARN] 默认 CMD 非零退出（兜底交付路径应已生效，检查下方产物）"
+fi
+for t in A B C; do
+  for base in "$LOOP_OUT/model" "$LOOP_MODEL"; do
+    if [ -f "$base/$t/checkpoint.npz" ]; then
+      echo "  [OK] $(basename "$base")/$t/checkpoint.npz ($(stat -c%s "$base/$t/checkpoint.npz") bytes, origin=$(python3 -c "import json;print(json.load(open('$base/$t/manifest.json')).get('origin'))" 2>/dev/null || echo '?'))"
+    else
+      echo "  [MISS] $(basename "$base")/$t/checkpoint.npz"
+    fi
+  done
+done
+$SUDO rm -rf "$LOOP_OUT" "$LOOP_MODEL"
+ok "默认 CMD 验证结束"
+
 step "[vm 7/7] 导出 docker save 归档"
 mkdir -p dist
 OUT="dist/$(echo "$TAG" | tr ':/' '__').tar"
