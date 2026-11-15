@@ -209,13 +209,18 @@ def main(argv=None):
     if args.quick:
         cands = [("秩·等权·随机初始化·wd=1e-2", None, 1e-2, False)]
     else:
+        # (名称, 初始化, 权重衰减, 是否对照/不参与选型)
+        # 选型只在"秩特征 + 按轴承等权"这条先验路线上进行；其余组合只作为消融展示，
+        # 避免用 validation 反推"该不该用秩变换"。
         cands = [
             ("秩·等权·随机初始化·wd=0", None, 0.0, False),
             ("秩·等权·随机初始化·wd=1e-3", None, 1e-3, False),
             ("秩·等权·随机初始化·wd=1e-2", None, 1e-2, False),
-            ("秩·等权·热启动·wd=0", args.init, 0.0, False),
             ("秩·等权·热启动·wd=1e-3", args.init, 1e-3, False),
-            ("原始·不加权·热启动·wd=0（对照）", args.init, 0.0, True),
+            # ---- 以下为消融（不参与选型）----
+            ("秩·不加权·随机初始化·wd=1e-2", None, 1e-2, True),
+            ("原始·等权·热启动·wd=1e-3", args.init, 1e-3, True),
+            ("原始·不加权·热启动·wd=0", args.init, 0.0, True),
         ]
 
     searched, finals = [], []
@@ -276,10 +281,15 @@ def main(argv=None):
           f"内部留出 {best_info['holdout_rmse']:.1f}")
     print(f"  官方 validation：RMSE {best['rmse']:.2f}  MAE {best['mae']:.2f}  "
           f"（相对官方起点 681.16 变 {(best['rmse'] / 681.16 - 1) * 100:+.1f}%）")
-    if controls:
-        c = finals[controls[0]]
-        print(f"  对照（原始特征·不加权）validation RMSE {c['rmse']:.2f} "
-              f"→ 秩+等权带来 {(c['rmse'] - best['rmse']) / c['rmse'] * 100:+.1f}%")
+    for i in controls:
+        print(f"  消融参照：「{finals[i]['name']}」validation RMSE {finals[i]['rmse']:.2f}"
+              f"（Bias {finals[i]['bias']:+.1f}，秩相关 {finals[i]['spearman']:+.3f}）")
+    rank_only = [f for i, f in enumerate(finals)
+                 if "秩" in f["name"] and "不加权" in f["name"]]
+    if rank_only:
+        r = rank_only[0]
+        print(f"  拆解：秩变换给「方向」→ 秩·不加权 秩相关 {r['spearman']:+.3f}、"
+              f"Bias {r['bias']:+.1f}；按轴承等权给「尺度」→ 选定方案 Bias {best['bias']:+.1f}")
     spread = [f for i, f in enumerate(finals) if not searched[i].get("control")]
     if len(spread) > 1:
         r = [f["rmse"] for f in spread]
