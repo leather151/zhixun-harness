@@ -133,8 +133,17 @@ def resolve_start_checkpoint(task, args):
 
 
 def model_out_root(args=None):
-    """交付目录：优先 /model（容器约定），否则 <out>/model。不可写就退化为后者。"""
-    for cand in (getattr(args, "model_out", None), os.environ.get("HARNESS_MODEL_OUT"), "/model"):
+    """交付目录：Linux 容器里优先 /model；本地 Windows 直接跑时**不要**写到盘符根目录。
+
+    踩过的坑：Windows 上 `Path("/model")` 会解析成当前盘根下的 `D:\\model`，
+    于是本地一跑就在 `D:\\model`、`D:\\output` 留下垃圾目录。所以只有显式指定
+    （--model-out / HARNESS_MODEL_OUT）或运行在 POSIX 上时才用绝对路径。
+    """
+    explicit = getattr(args, "model_out", None) or os.environ.get("HARNESS_MODEL_OUT")
+    candidates = [explicit] if explicit else []
+    if os.name == "posix":
+        candidates.append("/model")
+    for cand in candidates:
         if not cand:
             continue
         root = Path(cand)

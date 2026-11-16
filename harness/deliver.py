@@ -40,10 +40,26 @@ def _writable(root):
 
 
 def roots(out=None, model_out=None):
-    """返回 (out_root, model_root_or_None)：两个候选位置都尝试落盘。"""
-    out_root = Path(out or os.environ.get("HARNESS_OUT") or "/output")
-    mo = model_out or os.environ.get("HARNESS_MODEL_OUT") or "/model"
-    mo_root = Path(mo)
+    """返回 (out_root, model_root_or_None)：两个候选位置都尝试落盘。
+
+    Windows 本地直接跑时不能用 `Path("/output")`（会变成 D:\\output），
+    所以没有显式指定时，POSIX 才用 /output、/model，否则落到 <工程>/runs/model。
+    """
+    project = Path(__file__).resolve().parent.parent
+    explicit_out = out or os.environ.get("HARNESS_OUT")
+    if explicit_out:
+        out_root = Path(explicit_out)
+    elif os.name == "posix":
+        out_root = Path("/output")
+    else:
+        out_root = project / "runs"
+    explicit_model = model_out or os.environ.get("HARNESS_MODEL_OUT")
+    if explicit_model:
+        mo_root = Path(explicit_model)
+    elif os.name == "posix":
+        mo_root = Path("/model")
+    else:
+        mo_root = out_root / "model"
     return out_root, (mo_root if _writable(mo_root) else None)
 
 
