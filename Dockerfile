@@ -45,12 +45,34 @@ COPY harness /app/harness
 COPY ADAPTER.md CONTRACT.json /app/
 # 公开数据（只读副本，仅用于离线自检；正式评测由 /data 挂载覆盖）
 COPY data/public /app/data/public
+# PyTRiO SDK 的离线 wheelhouse（仅构建期使用，装完即删，不留在运行镜像里）
+COPY wheelhouse /app/wheelhouse
 
 RUN pip install --no-cache-dir -i "$PIP_INDEX" numpy==1.26.4 \
  && python -c "import numpy; print('numpy', numpy.__version__)" \
  && PYTHONPATH=/app:/app/harness python -c "from baselines.predict import predict; print('baselines.predict OK')" \
  && mkdir -p /output /work /model \
  && useradd -m -u 10001 runner && chown -R runner:runner /output /work /model
+
+# ---- 路线二（可选）：PyTRiO SDK 放进独立 venv，**离线安装**，绝不污染主运行时 ----
+# 为什么隔离：transformers/modelscope 会要求 numpy 2.x，而主运行时锁在 1.26.4（那套已验证）。
+# 为什么在镜像里：评测环境断网，只有装进来的东西才用得上；用自己微调的 sampler 权重
+# （trio://run_.../sampler_weights/...）必须靠 SDK 的 create_sampling_client(model_path=...)。
+ARG INSTALL_TRIO_SDK=1
+ARG TOKENIZER_MODEL=
+RUN if [ "$INSTALL_TRIO_SDK" = "1" ] && [ -d /app/wheelhouse ]; then \
+      python -m venv /app/.trio-venv \
+      && /app/.trio-venv/bin/pip install --no-index --no-cache-dir --no-compile \
+           --find-links /app/wheelhouse pytrio transformers \
+      && /app/.trio-venv/bin/python -c "import pytrio, transformers; print('trio venv OK')" \
+      && if [ -n "$TOKENIZER_MODEL" ]; then \
+           echo "[info] 不预取 tokenizer（$TOKENIZER_MODEL）；运行时可从平台缓存或 HARNESS_TRIO_CACHE 读取"; \
+         fi; \
+    else echo '[skip] 不安装 PyTRiO SDK'; fi \
+ && rm -rf /app/wheelhouse
+
+ENV HARNESS_TRIO_VENV_PYTHON=/app/.trio-venv/bin/python \
+    HARNESS_TRIO_CACHE=/opt/trio-cache
 
 USER runner
 
