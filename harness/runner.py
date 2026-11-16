@@ -104,6 +104,19 @@ def resolve_start_checkpoint(task, args):
         return Path(args.checkpoint), "cli"
     bundled = T.checkpoint_path(task)
     prev = previous_root(args)
+    # 起点优先级可切换：默认 bundled（镜像自带交付模型优先）。
+    # 设 HARNESS_START_POLICY=previous 则恢复"平台父模型优先"语义 ——
+    # 平台实际跑的 v6 镜像就是这一种：多轮之间靠 /previous 把上一轮被采用的模型接续下来。
+    if os.environ.get("HARNESS_START_POLICY", "").strip().lower() == "previous" and prev is not None:
+        if prev.is_file() and prev.suffix == ".npz":
+            return prev, "previous(preferred)"
+        for pattern in PREVIOUS_CANDIDATES:
+            cand = prev / pattern.format(task=task)
+            if cand.is_file():
+                return cand, "previous(preferred)"
+        for cand in sorted(prev.rglob("*.npz")):
+            if cand.is_file():
+                return cand, "previous(preferred)"
     if bundled.is_file():
         return bundled, ("bundled" if prev is None else "bundled(platform parent present)")
     if prev is not None:
