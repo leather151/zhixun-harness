@@ -53,6 +53,21 @@
     "output": {"regression": "{\"outputs\": {\"value\": <float, >=0>}}", "classification": "{\"outputs\": [{\"label\": <class>, \"score\": <float>}, ...]}"}
   },
   "train": {
+    "contract_entry": {
+      "command": "python -m baselines.train --profile <A|B|C> --train <jsonl> --validation <jsonl> --from-baseline <ckpt> --epochs N --output <new dir> --stage-id <id>",
+      "also_supports": ["--resume <ckpt>", "--learning-rate", "--batch-size", "--seed", "--recipe auto|plain|class_weight|distill|long_average", "--json"],
+      "module": "/app/baselines/train.py",
+      "outputs": ["<output>/checkpoint.npz", "<output>/training.json", "<output>/history.jsonl"],
+      "audit_fields": ["parent_checkpoint_sha256", "initial_steps", "final_steps", "initial_epochs", "final_epochs", "validation_before", "validation_after", "source_sha256"],
+      "recipes": {
+        "A": "class_weight：按 sqrt 逆类频率复制行（等价于样本权重，id 改写留痕）",
+        "B": "distill：用 /app/models/B/checkpoint_rank.npz 作教师，在真实+域内+偏移增强输入上蒸馏出只吃原始特征的学生",
+        "C": "long_average：同初始化多轮训练（更多 epoch 近似权重平均）"
+      },
+      "measured": {"A": {"before": 0.7140, "after": 0.7172, "metric": "macro_f1"},
+                   "B": {"before": 681.16, "after": 565.14, "metric": "rmse"},
+                   "C": {"before": 52.87, "after": 52.49, "metric": "rmse"}}
+    },
     "script": "/app/vendor/<TASK>/train.py",
     "callable": "train_run(profile, train_path, validation_path, output, resume=<parent ckpt>, epochs=N, learning_rate=lr, batch_size=bs, stage_id=s)",
     "cli": "无独立 CLI；由 /app/harness/runner.py 在闭环里调用（HARNESS_MODE=loop）",

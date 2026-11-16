@@ -66,6 +66,27 @@ python -u /app/harness/entry.py        # 由 HARNESS_MODE 决定行为
 
 ## 4. 训练（续训）与交付产物
 
+### 4.0 平台契约入口：`python -m baselines.train`（**最关键的一条**）
+
+按官方《续训指南》，每轮由平台执行：
+
+```sh
+python -m baselines.train --profile <A|B|C> \
+  --train public/train.jsonl --validation public/validation.jsonl \
+  --from-baseline checkpoint.npz --epochs 5 --output round-1 --stage-id round-1
+# 后续轮：--resume round-1/checkpoint.npz --output round-2 --stage-id round-2
+```
+
+产物目录（必须是新目录）：`checkpoint.npz` / `training.json` / `history.jsonl`。
+`training.json` 的 `parent_checkpoint_sha256` 指向真实起点，`initial_steps → final_steps` 递增。
+
+> **这一条曾经缺失**：我们之前只有 `vendor/<TASK>/train.py`（顶层模块，自用），
+> `/app/baselines/` 里没有 `train.py`，平台执行上面的命令会失败，
+> 于是每轮记录成「未训练，保留父模型」。现在 `/app/baselines/train.py` 已按契约实现，
+> 并注入我们验证过的配方（见 `baselines/README.md`）。
+
+### 4.1 备选：程序化调用
+
 - 函数：`/app/vendor/<TASK>/train.py::train_run(profile, train_path, validation_path, output, resume=<父检查点>, epochs, learning_rate, batch_size, stage_id)`
 - **父检查点解析顺序**：`--checkpoint` → `/previous`（目录或单文件，多种命名都探测；
   也可用 `--previous` / `HARNESS_PREVIOUS` 改位置）→ 镜像自带
