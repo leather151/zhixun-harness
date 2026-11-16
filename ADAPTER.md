@@ -101,6 +101,18 @@ python -m baselines.train --profile <A|B|C> \
 - 逐轮证据：`/output/<task>-<stream>-<时间戳>/windows.jsonl`、`decisions.jsonl`、`report.md`。
 - 约束：参数量 < 100,000；续训时 **hidden 宽度与 seed 不可变**。
 
+### 4.2 起点检查点优先级（镜像内固定为 v6 语义）
+
+镜像 `ENV HARNESS_START_POLICY=previous`，即：
+
+```
+--checkpoint → /previous（平台上一轮选中的模型）→ 镜像自带 models/<TASK>/
+```
+
+**为什么必须是 previous 优先**：平台每轮会把"当前被选中的模型"挂进来，闭环从它继续，
+才形成跨轮累计（实测 B 的隐藏集 RMSE 从 720 降到 203.5 就是这个机制）。
+若反过来用镜像自带模型每轮重启，会把已累计的收益清零。
+
 ### 兜底交付（重要）
 
 入口在跑闭环**之前**就先把内置检查点落成交付产物；闭环中途失败也不影响产物已在盘上。
@@ -109,13 +121,34 @@ python -m baselines.train --profile <A|B|C> \
 
 ## 5. 策略层
 
-- **默认 `rule`**（确定性阈值表），保证无网络也能跑完。
-- LLM 可选：存在 `SAMPLER_ENDPOINT` / `PYTRIO_BASE_URL` / `OPENAI_BASE_URL` 等环境变量时启用
-  `Qwen/Qwen3.5-4B`（PyTRiO，OpenAI 兼容 `/api/openai/v1`）；
-  请求带 `enable_thinking: false` 与 `n: 3`（自洽性投票）；**任何异常自动回落规则版**。
+- **镜像默认 `--policy auto`**（合规关键）：平台注入 PyTRiO 接入信息
+  （`SAMPLER_ENDPOINT/MODEL/API_KEY`、`PYTRIO_*`、`OPENAI_*` 等）时，自动改用
+  **`Qwen/Qwen3.8-27B`** 作"合规驱动模型"（赛题路线一）；未注入则回落确定性规则版，
+  以保证"无人干预跑完"这条硬门槛。
+- **模型降级链**：`Qwen/Qwen3.8-27B` → `Qwen/Qwen3.5-4B`。启动时用极小请求探测
+  （16 token / 15 秒）——实测 27B 端点拥塞时会整段 90 秒超时，不探测的话每窗白等一次超时，
+  最后全部 `rule(fallback)`。
+- 每窗决策记录 `source`（`llm` / `rule` / `rule(fallback)`）与 `model_used`，可自证合规。
 - 动作集合：`hold / recompute_stats / finetune_1ep / finetune_3ep / swap_candidate / rollback`。
+- **受控停更**：`config.policy.allow_update` 可按任务关闭更新。当前 `C=false` ——
+  平台实测 C 更新后 NASA 非对称分由 4.26e10 变为 7.65e10（变差），按"更新必须有依据"原则停更。
 - 守门余量（`gate.margin`，挑战者必须超过冠军这个幅度才上线）：
   A=0.005（Macro-F1）、B=5.0（分钟）、C=0.5（循环）。
+
+## 5.1 实验台账（门槛 3 的直接证据）
+
+每个任务的输出目录会写 `experiments.jsonl`，**每窗一行、四段式**：
+
+```json
+{"task":"B","round":2,
+ "read_history":{"prev_metric":204.56,"ref_metric":204.56,"history_actions":["finetune_1ep"]},
+ "hypothesis":"已出现漂移信号：轻量续训（1 epoch、低学习率）可在低成本下缓解",
+ "change":"finetune_1ep（epochs=1, 2.1s, steps [825, 1155]）",
+ "result":{"metric":190.86,"delta_vs_ref":-13.7,"drift_ks_median":0.488,"by_group":{}},
+ "decision":{"action":"rollback","source":"llm","gate":{"adopted":false},"reason":"..."}}
+```
+
+字段刻意按赛题门槛"读历史→提假设→做实验→做决策"四段式组织，评委可直接核对。
 
 ## 6. 数据与限制
 

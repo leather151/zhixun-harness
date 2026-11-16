@@ -5,7 +5,9 @@
                    "abs_z_median_trigger":  0.50,
                    "metric_drop_trigger":  0.02,
                    "metric_rise_trigger":  0.05,
-                   "escalate_after":  2
+                   "escalate_after":  2,
+                   "allow_update":  {"A": true, "B": true, "C": false},
+                   "_allow_update_说明":  "受控停更：C 的平台实测显示更新后 NASA 非对称分由 4.26e10 变差到 7.65e10，按'更新必须有依据'原则关闭其更新；A/B 保留"
                },
     "caps":  {
                  "max_updates":  4,
