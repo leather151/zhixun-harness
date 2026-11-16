@@ -413,16 +413,26 @@ def main(argv=None):
     if task not in DEFAULTS:
         raise SystemExit(f"unsupported profile: {args.profile}")
 
-    # ---- 新数据包通道：特征维度与 A/B/C 都对不上时，按输入结构自适应建网 ----
+    # ---- 新数据包通道：特征维度对不上，或标签类型与 profile 不符时，按输入结构自适应建网 ----
     try:
         n_features = feature_count(args.train)
     except Exception as exc:                                # noqa: BLE001
         raise SystemExit(f"读不到训练文件结构：{exc}")
-    if n_features != KNOWN_FEATURES[task]:
-        print(f"[generic] 输入 {n_features} 维 ≠ profile {task} 的 {KNOWN_FEATURES[task]} 维，"
-              f"改走自适应通道（不使用任何预训练权重）", file=sys.stderr)
+    # 标签类型也要核对：官方 A2 的"轴承退化识别"是分类（Macro-F1 / 严重退化漏报），
+    # 而 profile B 是 RUL 回归。若数据给的是字符串标签而 profile 是回归（或反之），
+    # 直接走自适应通道，否则会撞上官方检查点校验。
+    first = read_jsonl(args.train)[0] if Path(args.train).is_file() else {}
+    data_is_cls = isinstance(first.get("answer"), str)
+    profile_is_cls = DEFAULTS[task] and task == "A"
+    mismatch = (n_features != KNOWN_FEATURES[task]) or (data_is_cls != profile_is_cls)
+    if mismatch:
+        why = (f"输入 {n_features} 维 ≠ profile {task} 的 {KNOWN_FEATURES[task]} 维"
+               if n_features != KNOWN_FEATURES[task]
+               else f"标签类型不符（数据={'分类' if data_is_cls else '回归'}，"
+                    f"profile {task}={'分类' if profile_is_cls else '回归'}）")
+        print(f"[generic] {why}，改走自适应通道（不使用任何预训练权重）", file=sys.stderr)
         report = train_generic(args.train, args.validation, args.output,
-                               hidden=args.batch_size and None, epochs=args.epochs or 5,
+                               epochs=args.epochs or 5,
                                learning_rate=args.learning_rate or 3e-3,
                                batch_size=args.batch_size or 128, seed=args.seed or 42,
                                stage_id=args.stage_id, resume=args.resume or args.from_baseline)

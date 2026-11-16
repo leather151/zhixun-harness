@@ -63,5 +63,6 @@ HEALTHCHECK --interval=60s --timeout=30s --start-period=10s --retries=3 \
 # 统一入口：HARNESS_MODE=loop（默认，自进化闭环）| serve（predict 管道）| selftest
 ENTRYPOINT ["python", "-u", "/app/harness/entry.py"]
 # 默认跑闭环：stream=train 才允许"读历史→做实验→上线/回滚"，官方 validation 始终只测不改；
-# policy=rule 是因为封闭评测没有外网（LLM 策略在有端点时用 --policy auto/llm 开启）。
-CMD ["--task", "all", "--stream", "train", "--windows", "4", "--policy", "rule", "--swan", "off", "--out", "/output"]
+# policy=auto：评测环境若由平台注入 PyTRiO 接入信息（SAMPLER_* / PYTRIO_*），会自动改用
+# Qwen3.8-27B 作为"合规驱动模型"；没有注入则回落确定性规则版，保证"无人干预跑完"这条硬门槛。
+CMD ["--task", "all", "--stream", "train", "--windows", "4", "--policy", "auto", "--swan", "off", "--out", "/output"]
