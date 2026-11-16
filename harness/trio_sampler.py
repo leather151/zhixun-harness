@@ -69,26 +69,35 @@ def _worker(request_path):
     import pytrio as trio
 
     req = json.loads(Path(request_path).read_text(encoding="utf-8"))
-    client = trio.ServiceClient()
+    client = trio.ServiceClient()      # 底座 URL / 密钥来自 PYTRIO_BASE_URL / PYTRIO_API_KEY
+    # 官方规则：模型名优先用服务端返回的清单，不要硬编码
+    base_model = req.get("base_model")
     try:
-        sc = client.create_sampling_client(base_model=req["base_model"],
+        supported = client.get_supported_models()
+    except Exception:                                         # noqa: BLE001
+        supported = []
+    if supported and base_model not in supported:
+        base_model = next((m for m in supported if "27B" in m), supported[0])
+    try:
+        sc = client.create_sampling_client(base_model=base_model,
                                            model_path=req["model_path"])
     except TypeError:
         # 老版本 SDK 不支持 model_path 关键字 → 明确报出来，不要静默用错模型
         raise SystemExit("this pytrio SDK does not accept model_path; "
                          "cannot load a fine-tuned sampler weight")
-    tokenizer = sc.get_tokenizer(cache_dir=req.get("cache_dir"))
+    tokenizer = sc.get_tokenizer()     # 实测 SDK 0.2.9：该签名不接受任何参数
     prompt = tokenizer.apply_chat_template(req["messages"], tokenize=False,
                                            add_generation_prompt=True)
     ids = tokenizer.encode(prompt)
     import pytrio as _t
-    params = _t.SamplingParams(max_tokens=req["max_tokens"], temperature=req["temperature"],
-                               seed=req["seed"])
+    params = _t.SamplingParams(max_tokens=int(req["max_tokens"]),
+                               temperature=float(req["temperature"]),
+                               seed=int(req["seed"]))
     resp = sc.sample(prompt=_t.ModelInput.from_ints(ids), num_samples=1,
                      sampling_params=params).result()
     text = (resp.sequences[0].text or "").strip()
     print(json.dumps({"content": text, "model_used": req["model_path"],
-                      "base_model": req["base_model"]}, ensure_ascii=False))
+                      "base_model": base_model}, ensure_ascii=False))
     return 0
 
 
