@@ -27,6 +27,7 @@ import importlib.util
 import json
 import shutil
 import sys
+import time
 import tempfile
 from pathlib import Path
 
@@ -246,6 +247,147 @@ def _task_of_checkpoint(checkpoint):
     return "B"
 
 
+# ------------------------------------------------------------------ 通用（新数据包）通道
+
+KNOWN_FEATURES = {"A": 128, "B": 34, "C": 24}
+MAX_PARAMS = 100000
+
+
+def feature_count(path):
+    rows = read_jsonl(path)
+    if not rows:
+        raise ValueError(f"训练文件为空：{path}")
+    paths, _ = flatten(rows[0]["inputs"])
+    return len(paths)
+
+
+def _generic_hidden(n_features, requested=None):
+    """在"参数量 < 100000"约束下选一个合适的隐藏宽度。"""
+    def count(h):
+        return n_features * h + h + h + 1
+    if requested:
+        return int(requested)
+    best = 8
+    for h in (8, 16, 24, 32, 48, 64, 96, 128):
+        if count(h) < MAX_PARAMS:
+            best = h
+    return best
+
+
+def _infer_dataset(path):
+    """从 jsonl 推断 (task 类型, classes, paths, x, y)。分类按 answer 是否为字符串判断。"""
+    rows = read_jsonl(path)
+    paths, xs, ys, labels = None, [], [], []
+    is_cls = isinstance(rows[0].get("answer"), str)
+    for r in rows:
+        p, v = flatten(r["inputs"])
+        if paths is None:
+            paths = p
+        if p != paths:
+            raise ValueError("训练文件里各行的输入结构不一致，无法泛化训练")
+        xs.append(v)
+        if is_cls:
+            labels.append(str(r["answer"]))
+        else:
+            ys.append(float(r["answer"]))
+    x = np.asarray(xs, dtype=np.float64)
+    if is_cls:
+        classes = sorted(set(labels))
+        y = np.asarray([classes.index(v) for v in labels], dtype=np.float64)
+        return "classification", classes, paths, x, y, len(rows)
+    return "regression", [], paths, x, np.asarray(ys, dtype=np.float64), len(rows)
+
+
+def train_generic(train_path, validation_path, output, hidden=None, epochs=5,
+                  learning_rate=3e-3, batch_size=128, seed=42, stage_id="harness-round",
+                  resume=None):
+    """**新数据包通道**：数据结构与 A/B/C 都不同（特征维度/字段不同）时也能训练。
+
+    为什么需要：评测数据包不一定就是 gas / 轴承 / C-MAPSS。官方三个 profile 的
+    `paths`/维度是写死的，`train_run` 会因 schema 不匹配直接拒绝；这时必须能从零
+    建一个"结构相同、维度自适应"的 CPU MLP，并用该数据自己的 train/validation 拟合。
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("_baselines_model", Path(__file__).with_name("model.py"))
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["_baselines_model"] = mod
+    spec.loader.exec_module(mod)
+
+    task, classes, paths, x, y, n_train = _infer_dataset(train_path)
+    vtask, vclasses, vpaths, vx, vy, n_valid = _infer_dataset(validation_path)
+    if vpaths != paths:
+        raise ValueError("验证集的输入结构必须与训练集一致")
+    if vtask != task or (task == "classification" and vclasses != classes):
+        raise ValueError("验证集的标签类型/类别必须与训练集一致")
+
+    if task == "classification":
+        # 官方 fit 的分类分支要拿整数下标去取概率，标签必须是整型
+        y = y.astype(np.int64)
+        vy = vy.astype(np.int64)
+    hidden = _generic_hidden(len(paths), hidden)
+    model = mod.Model(task, [json.dumps(list(p), ensure_ascii=False, separators=(",", ":"))
+                             for p in paths], classes, x, y,
+                      hidden=hidden, seed=seed, learning_rate=learning_rate,
+                      batch_size=batch_size)
+    if resume:
+        try:
+            prev = mod.Model.load(resume)
+            if tuple(prev.meta.get("paths") or ()) == tuple(model.meta["paths"]) and prev.meta["task"] == task:
+                model = prev     # 同结构才续训
+        except Exception:                                    # noqa: BLE001
+            pass
+    before = _generic_metrics(model, vx, vy, task, classes)
+    started = time.time()
+    history, losses = [], []
+    for _ in range(int(epochs)):
+        loss = model.fit(x, y, 1)[0]
+        losses.append(float(loss))
+        history.append({"epoch": model.meta["epochs"], "step": model.meta["steps"],
+                        "loss": float(loss),
+                        "validation": _generic_metrics(model, vx, vy, task, classes)})
+    after = _generic_metrics(model, vx, vy, task, classes)
+
+    output = Path(output)
+    if output.exists():
+        raise ValueError(f"输出目录必须不存在：{output}")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.mkdir(parents=True)
+    model.save(output / "checkpoint.npz")
+    report = {"format": "zhixun.harness-generic-report.v1", "profile": "GENERIC",
+              "task": task, "stage_id": stage_id, "seed": seed,
+              "parameter_count": model.meta["parameter_count"], "hidden": hidden,
+              "input_features": len(paths), "train_rows": n_train, "validation_rows": n_valid,
+              "parent_checkpoint_sha256": _digest(resume) if resume else None,
+              "initial_steps": 0, "final_steps": model.meta["steps"],
+              "final_epochs": model.meta["epochs"], "requested_epochs": int(epochs),
+              "training_seconds": round(time.time() - started, 3),
+              "learning_rate": learning_rate, "batch_size": batch_size,
+              "validation_before": before, "validation_after": after,
+              "loss_start": losses[0] if losses else None, "loss_end": losses[-1] if losses else None,
+              "note": "非 A/B/C 数据包：按输入结构自适应建网，未使用任何预训练权重"}
+    (output / "training.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+                                          encoding="utf-8")
+    with (output / "history.jsonl").open("w", encoding="utf-8") as fh:
+        for row in history:
+            fh.write(json.dumps({"stage_id": stage_id, **row}, ensure_ascii=False) + "\n")
+    return report
+
+
+def _digest(path):
+    import hashlib
+    return "sha256:" + hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def _generic_metrics(model, x, y, task, classes):
+    pred = np.asarray(model.predict(x))
+    if task == "classification":
+        p = pred.argmax(1)
+        return {"accuracy": float(np.mean(p == y)), "n_classes": len(classes)}
+    p = pred.ravel()
+    error = p - y
+    return {"rmse": float(np.sqrt(np.mean(error ** 2))), "mae": float(np.mean(np.abs(error)))}
+
+
 # ------------------------------------------------------------------ 主流程
 
 def main(argv=None):
@@ -270,6 +412,23 @@ def main(argv=None):
     task = args.profile.strip().upper()[:1]
     if task not in DEFAULTS:
         raise SystemExit(f"unsupported profile: {args.profile}")
+
+    # ---- 新数据包通道：特征维度与 A/B/C 都对不上时，按输入结构自适应建网 ----
+    try:
+        n_features = feature_count(args.train)
+    except Exception as exc:                                # noqa: BLE001
+        raise SystemExit(f"读不到训练文件结构：{exc}")
+    if n_features != KNOWN_FEATURES[task]:
+        print(f"[generic] 输入 {n_features} 维 ≠ profile {task} 的 {KNOWN_FEATURES[task]} 维，"
+              f"改走自适应通道（不使用任何预训练权重）", file=sys.stderr)
+        report = train_generic(args.train, args.validation, args.output,
+                               hidden=args.batch_size and None, epochs=args.epochs or 5,
+                               learning_rate=args.learning_rate or 3e-3,
+                               batch_size=args.batch_size or 128, seed=args.seed or 42,
+                               stage_id=args.stage_id, resume=args.resume or args.from_baseline)
+        print(json.dumps(report, ensure_ascii=False, allow_nan=False,
+                         indent=None if args.json else 2))
+        return 0
 
     parent = args.resume or args.from_baseline
     if not parent:

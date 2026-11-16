@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -115,6 +116,90 @@ def default_checkpoint(task):
     raise FileNotFoundError(f"缺少模型：{root}/checkpoint*.npz")
 
 
+# ------------------------------------------------------------------ 按 schema 找模型
+# 为什么需要：评测数据包**不一定**就是 gas / 轴承 / C-MAPSS 这三套。
+# 一旦输入的特征字段/维度变了，按"任务名"找模型会直接失败。
+# 这里改成**按 schema 匹配**：扫一遍所有检查点，谁的 `metadata.paths` 与本次输入
+# 逐字段一致就用谁 —— 这样只要该数据上训练过一次模型，预测就能接上。
+
+_SCHEMA_INDEX = {}
+
+
+def _candidate_dirs():
+    """检查点搜索目录：镜像内、平台父模型、交付目录、以及环境变量指定的位置。"""
+    dirs = [MODEL_ROOT, Path("/previous"), Path("/model"), Path("/output/model")]
+    for extra in (os.environ.get("HARNESS_MODELS"), os.environ.get("HARNESS_PREVIOUS"),
+                  os.environ.get("HARNESS_MODEL_OUT")):
+        if extra:
+            dirs.append(Path(extra))
+    return [d for d in dirs if d and Path(d).is_dir()]
+
+
+def checkpoint_pool():
+    """所有可用的检查点（镜像内 + 平台挂载的父模型）。"""
+    seen, pool = set(), []
+    for root in _candidate_dirs():
+        for path in sorted(Path(root).rglob("*.npz")):
+            key = str(path.resolve())
+            if key in seen:
+                continue
+            seen.add(key)
+            pool.append(path)
+    return pool
+
+
+def schema_index(refresh=False):
+    """{paths 元组: 检查点路径}，用于按输入 schema 精确匹配。"""
+    global _SCHEMA_INDEX
+    if _SCHEMA_INDEX and not refresh:
+        return _SCHEMA_INDEX
+    index = {}
+    for path in checkpoint_pool():
+        try:
+            model = load(checkpoint=path)
+            key = tuple(model.meta.get("paths") or ())
+            if key:
+                index.setdefault(key, path)
+        except Exception:                                     # noqa: BLE001
+            continue
+    _SCHEMA_INDEX = index
+    return index
+
+
+def find_by_schema(paths):
+    """按输入 schema 找匹配的检查点；找不到返回 None。"""
+    key = tuple(paths)
+    path = schema_index().get(key)
+    if path is None:
+        path = schema_index(refresh=True).get(key)   # 可能刚训练出新的检查点
+    return path
+
+
+def load_for_schema(paths):
+    """给一个输入 schema，返回可直接预测的模型。
+
+    顺序：内置 A/B/C（schema 一致时）→ 任意扫描到的同 schema 检查点 → 报错。
+    """
+    try:
+        task = detect_task(paths)
+    except ValueError:
+        task = None
+    if task is not None:
+        try:
+            model = load(task)
+            if tuple(model.meta.get("paths") or ()) == tuple(paths):
+                return model
+        except Exception:                                     # noqa: BLE001
+            pass
+    path = find_by_schema(paths)
+    if path is not None:
+        return load(checkpoint=path)
+    raise ValueError(
+        "输入 schema 与镜像内任何检查点都不匹配，且该数据上还没有训练过模型。"
+        f"（{len(paths)} 个特征；已扫描 {len(checkpoint_pool())} 个检查点）"
+        "请先用 `python -m baselines.train` 在该数据上训练一轮，或提供 HARNESS_MODELS/HARNESS_PREVIOUS。")
+
+
 def load(task=None, checkpoint=None):
     """加载（并缓存）某个任务的模型。`checkpoint` 给了就以它为准，任务从其 metadata 反推。"""
     if checkpoint is not None:
@@ -172,10 +257,13 @@ def predict(model, inputs):
 
 
 def predict_auto(inputs):
-    """按输入 schema 自动识别任务并预测（镜像里 `HARNESS_MODE=serve` 走的是同一条逻辑）。"""
+    """按输入 schema 自动选模型并预测（镜像里 `HARNESS_MODE=serve` 走的是同一条逻辑）。
+
+    先按内置 A/B/C 识别；识别不出来（说明是**新的数据包**）就按 schema
+    在镜像与 /previous 里找同字段的检查点 —— 只要该数据上训练过一轮就能接上。
+    """
     paths, _ = flatten_inputs(inputs)
-    task = detect_task(paths)
-    return predict(load(task), inputs)
+    return predict(load_for_schema(paths), inputs)
 
 
 # ------------------------------------------------------------------ CLI

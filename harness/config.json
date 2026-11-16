@@ -29,7 +29,7 @@
                  },
     "llm":  {
                 "endpoint":  "https://pytrio.com/api/openai/v1",
-                "model":  "Qwen/Qwen3.5-4B",
+                "model":  "Qwen/Qwen3.8-27B",
                 "enable_thinking":  false,
     "vote":  3,
                 "timeout_seconds":  30,

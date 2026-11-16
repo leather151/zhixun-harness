@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -96,12 +97,64 @@ def run_round(task, parent_dir, out_dir, windows, policy):
             "actions": actions, "tail": (proc.stdout or "").strip().splitlines()[-3:]}
 
 
+# ---------------------------------------------------------------- 实验引擎
+# 与"闭环引擎"的区别：
+#   闭环引擎 = 平台每轮调一次容器，靠漂移触发的 finetune/rollback 改进模型；
+#   实验引擎 = 每轮**显式提出一个假设并改配方**（epoch 数 / 学习率 / 配方名），
+#              用官方 `python -m baselines.train` 真训一遍，再按公开验证集决定采纳与否。
+# 后者才对应赛题要求的"读历史 → 做实验 → 依据结果决策"三轮独立记录。
+
+EXPERIMENTS = {
+    "A": [("基线续训（对照组）", {"epochs": 2, "recipe": "plain"}),
+          ("类别加权：乙醛只有 30 条，按 sqrt 逆频率复制行", {"epochs": 2, "recipe": "class_weight"}),
+          ("加权 + 更多轮次：让加权真正起作用", {"epochs": 8, "recipe": "class_weight"})],
+    "B": [("基线续训（对照组）", {"epochs": 2, "recipe": "plain"}),
+          ("秩模型蒸馏 + 域内/偏移增强（只吃原始特征）", {"epochs": 2, "recipe": "distill"}),
+          ("蒸馏 + 更多轮次", {"epochs": 4, "recipe": "distill"})],
+    "C": [("基线续训（对照组）", {"epochs": 2, "recipe": "plain"}),
+          ("长训练：同初始化多轮打乱近似权重平均", {"epochs": 16, "recipe": "long_average"}),
+          ("更长训练 + 更小学习率", {"epochs": 24, "recipe": "long_average",
+                                     "learning_rate": 1.5e-3})],
+}
+
+
+def run_experiment(task, parent, out_dir, spec):
+    """用官方 CLI 做一次实验（`python -m baselines.train`）。"""
+    base = T.task_base(task)
+    cmd = [sys.executable, "-m", "baselines.train", "--profile", task,
+           "--train", str(base / "train.jsonl"), "--validation", str(base / "validation.jsonl"),
+           "--output", str(out_dir), "--stage-id", f"exp-{out_dir.name}",
+           "--recipe", spec.get("recipe", "plain"), "--epochs", str(spec.get("epochs", 2))]
+    if spec.get("learning_rate"):
+        cmd += ["--learning-rate", str(spec["learning_rate"])]
+    if parent is not None:
+        cmd += ["--from-baseline", str(parent)]
+    env = dict(os.environ, PYTHONPATH=str(APP), PYTHONIOENCODING="utf-8")
+    t0 = time.time()
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", cwd=str(APP), env=env)
+    spent = time.time() - t0
+    ckpt = Path(out_dir) / "checkpoint.npz"
+    report = None
+    tj = Path(out_dir) / "training.json"
+    if tj.is_file():
+        try:
+            report = json.loads(tj.read_text(encoding="utf-8"))
+        except Exception:                                     # noqa: BLE001
+            report = None
+    return {"returncode": proc.returncode, "seconds": round(spent, 1),
+            "checkpoint": ckpt if ckpt.is_file() else None, "report": report,
+            "stderr": (proc.stderr or "").strip().splitlines()[-3:]}
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="本地复刻平台多轮候选/采纳协议")
     ap.add_argument("--task", default="B", choices=list(T.TASKS))
     ap.add_argument("--rounds", type=int, default=3)
     ap.add_argument("--windows", type=int, default=2, help="每轮闭环的数据流窗口数")
     ap.add_argument("--policy", default="rule")
+    ap.add_argument("--engine", default="experiment", choices=["experiment", "loop"],
+                    help="experiment=每轮换一个假设并真训（对应'三轮独立'）；loop=模拟平台调容器跑闭环")
     ap.add_argument("--keep", action="store_true", help="保留临时目录（调试用）")
     args = ap.parse_args(argv)
 
@@ -123,9 +176,18 @@ def main(argv=None):
     print("-" * len(header) * 2)
     adopted = 0
     rows = []
+    plans = EXPERIMENTS[task]
     for i in range(1, args.rounds + 1):
         out = work / f"round-{i:02d}"
-        attempt = run_round(task, parent_dir, out, args.windows, args.policy)
+        if args.engine == "experiment":
+            name, spec = plans[(i - 1) % len(plans)]
+            print(f"轮次 {i}｜实验假设：{name}")
+            attempt = run_experiment(task, selected, out, spec)
+            actions = [f"配方={spec.get('recipe')} epochs={spec.get('epochs')}"
+                       + (f" lr={spec['learning_rate']}" if spec.get("learning_rate") else "")]
+        else:
+            attempt = run_round(task, parent_dir, out, args.windows, args.policy)
+            actions = attempt["actions"]
         if attempt["returncode"] != 0 or attempt["checkpoint"] is None:
             print(f"{i:<5}{'运行失败':<46}{'保留此前模型':<26}{attempt['seconds']}s")
             rows.append({"round": i, "ok": False})
@@ -134,9 +196,9 @@ def main(argv=None):
         take = better(task, cand, incumbent)
         label = "采用本轮模型" if take else "候选未采用，保留此前模型"
         print(f"{i:<5}{fmt(task, cand):<46}{label:<26}{attempt['seconds']}s")
-        print(f"     {'':<3}本轮动作：{' / '.join(attempt['actions']) or '（无更新）'}")
-        rows.append({"round": i, "ok": True, "candidate": cand,
-                     "incumbent": incumbent, "adopted": take})
+        print(f"     {'':<3}本轮动作：{' / '.join(a for a in actions if a) or '（无更新）'}")
+        rows.append({"round": i, "ok": True, "hypothesis": name if args.engine == "experiment" else None,
+                     "candidate": cand, "incumbent": incumbent, "adopted": take})
         if take:
             adopted += 1
             incumbent = cand

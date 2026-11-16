@@ -238,20 +238,21 @@ def build(kind, cfg, endpoint=None, model=None, api_key=None,
           default_endpoint=None, default_model=None, enable_thinking=False, vote=1):
     """构造决策器。
 
-    kind = "auto"（默认）：
-      1) 先按环境变量探测平台注入的接入信息；
-      2) 没有的话，若本机有 Key（环境变量或 .env.local）且配置里给了默认 endpoint，
-         就用默认 endpoint（本项目默认是 PyTRiO 的 Qwen）；
-      3) 以上都没有 → 确定性规则决策器。
+    解析顺序（auto 与 llm 一致，避免"显式要 LLM 却静默降级成规则版"）：
+      1) 调用方显式给的 endpoint/model/api_key；
+      2) 平台注入的环境变量（SAMPLER_* / PYTRIO_* / OPENAI_* …）；
+      3) 配置文件里的默认 endpoint/model（本项目默认 PyTRiO 的 Qwen3.8-27B）；
+      4) 都没有 → 确定性规则决策器（并在 kind=="llm" 时明确告警，不静默降级）。
     """
-    detected = None
-    if kind == "auto":
-        detected = detect_from_env()
-        if detected:
-            endpoint, model, api_key = detected["endpoint"], detected["model"], detected["api_key"]
-        elif default_endpoint and (api_key or _default_key()):
-            endpoint, model = default_endpoint, default_model or model
-    if kind in ("auto", "llm") and endpoint:
+    detected = detect_from_env() if kind in ("auto", "llm") else None
+    if detected:
+        endpoint = endpoint or detected["endpoint"]
+        model = model or detected["model"]
+        api_key = api_key or detected["api_key"]
+    endpoint = endpoint or default_endpoint
+    model = model or default_model
+    key = api_key or _default_key()
+    if endpoint and (key or detected):
         pol = LLMPolicy(endpoint, model or "qwen", api_key=api_key, cfg=cfg,
                         enable_thinking=enable_thinking, vote=vote)
         if detected:
@@ -259,6 +260,9 @@ def build(kind, cfg, endpoint=None, model=None, api_key=None,
         elif default_endpoint and endpoint == default_endpoint:
             pol.detected_env = "config.default_endpoint"
         return pol
+    if kind == "llm":
+        print("[policy] 警告：已要求 LLM 决策，但既没有 endpoint 也没有 API Key"
+              "（检查 .env.local / PYTRIO_API_KEY），本轮回落规则版。", flush=True)
     return RulePolicy(cfg)
 
 
