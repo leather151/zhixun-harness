@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+import os
 import urllib.request
 
 ACTIONS = ["hold", "finetune_1ep", "finetune_3ep", "rollback"]
@@ -141,6 +142,11 @@ class LLMPolicy:
 
     # ---------------------------------------------------------------- 探测
     def _probe(self):
+        # HARNESS_LLM_PROBE=0 可完全关掉探测（平台若已明确告知模型可用，省掉这一跳）
+        if os.environ.get("HARNESS_LLM_PROBE", "1").strip() == "0":
+            self.active_model = self.model_chain[0] if self.model_chain else ""
+            self.probe_note = "probe skipped (HARNESS_LLM_PROBE=0)"
+            return self.active_model
         """用一次极小的请求确认哪个模型可用，避免每个窗口都白等超时。"""
         if self.active_model is not None:
             return self.active_model
@@ -173,8 +179,17 @@ class LLMPolicy:
         finally:
             self.timeout = old_timeout
 
-    # ---------------------------------------------------------------- HTTP
+    # ---------------------------------------------------------------- 传输层
+    # 平台可能用三种方式给模型访问：
+    #   (a) OpenAI 兼容 HTTP 端点（PyTRiO / 自建网关）—— 默认；
+    #   (b) **命令式网关**：宿主只暴露一个 CLI/RPC 入口，而不是 HTTP。
+    #       用 `HARNESS_LLM_CMD` 指定该命令：我们把请求 JSON 写它的 stdin，
+    #       从它的 stdout 读回复 JSON。这样"接线"由平台决定，我们不替换传输语义。
+    #   (c) 都没有 → 规则版兜底。
     def _post(self, body):
+        cmd = os.environ.get("HARNESS_LLM_CMD", "").strip()
+        if cmd:
+            return self._post_via_cmd(cmd, body)
         import urllib.error
         import urllib.request
         url = self.endpoint if self.endpoint.endswith("/chat/completions") \
@@ -188,6 +203,44 @@ class LLMPolicy:
                 return resp.status, resp.read().decode("utf-8", "replace")
         except urllib.error.HTTPError as exc:
             return exc.code, exc.read().decode("utf-8", "replace")[:400]
+
+    def _post_via_cmd(self, cmd, body):
+        """命令式网关：stdin 收请求 JSON，stdout 回回复 JSON。
+
+        期望 stdout 是下面任一形状（前两种最常见）：
+          {"content": "..."}                      —— 只要文本
+          {"choices": [{"message": {"content": "..."}}]}   —— OpenAI 兼容
+          {"text": "..."} / {"output": "..."}     —— 常见 RPC 返回
+        我们把后两种归一化成 OpenAI 形状，便于复用同一套解析。
+        """
+        import shlex
+        import subprocess
+        try:
+            argv = shlex.split(cmd, posix=(os.name != "nt"))
+            proc = subprocess.run(argv, input=body, capture_output=True,
+                                  timeout=max(10.0, self.timeout))
+        except Exception as exc:                              # noqa: BLE001
+            raise RuntimeError(f"gateway cmd failed: {type(exc).__name__}: {exc}") from exc
+        if proc.returncode != 0:
+            err = (proc.stderr or b"").decode("utf-8", "replace")[:300]
+            return 502, f"gateway exit {proc.returncode}: {err}"
+        text = (proc.stdout or b"").decode("utf-8", "replace").strip()
+        try:
+            data = json.loads(text)
+        except Exception:                                     # noqa: BLE001
+            return 200, json.dumps({"choices": [{"message": {"content": text}}]})
+        if isinstance(data, dict) and "choices" not in data:
+            for key in ("content", "text", "output", "result", "message"):
+                value = data.get(key)
+                if isinstance(value, str):
+                    return 200, json.dumps({"choices": [{"message": {"content": value}}],
+                                            "usage": data.get("usage")})
+            # 允许网关直接把 usage/模型信息带回
+            if isinstance(data.get("data"), dict):
+                return 200, json.dumps({"choices": [{"message": {
+                    "content": str(data["data"].get("content") or data["data"].get("text") or "")}}],
+                    "usage": data["data"].get("usage")})
+        return 200, text
 
     def __call__(self, state, caps):
         active = self._probe()
@@ -299,10 +352,29 @@ def build(kind, cfg, endpoint=None, model=None, api_key=None,
         endpoint = endpoint or detected["endpoint"]
         model = model or detected["model"]
         api_key = api_key or detected["api_key"]
+    # 平台的"模型访问"注入点（按优先级）：
+    #   HARNESS_LLM_CMD  → 命令式网关（宿主只给 CLI/RPC 时用，最通用）
+    #   HARNESS_LLM_CONFIG → JSON 文件，可给出 endpoint / base_url / model / api_key
+    #   各类 *_BASE_URL / *_ENDPOINT 环境变量
+    gateway_cmd = os.environ.get("HARNESS_LLM_CMD", "").strip()
+    cfg_file = os.environ.get("HARNESS_LLM_CONFIG", "").strip()
+    if cfg_file and Path(cfg_file).is_file():
+        try:
+            ext = json.loads(Path(cfg_file).read_text(encoding="utf-8"))
+        except Exception:                                     # noqa: BLE001
+            ext = {}
+        endpoint = endpoint or ext.get("endpoint") or ext.get("base_url") or ext.get("model_base_url")
+        model = model or ext.get("model")
+        api_key = api_key or ext.get("api_key") or ext.get("key")
+    for name in ("HARNESS_MODEL_BASE_URL", "SAMPLER_BASE_URL", "MODEL_BASE_URL"):
+        if not endpoint and os.environ.get(name):
+            endpoint = os.environ[name]
+    if gateway_cmd:
+        endpoint = endpoint or "cmd://harness-llm-gateway"
     endpoint = endpoint or default_endpoint
     model = model or default_model
     key = api_key or _default_key()
-    if endpoint and (key or detected):
+    if gateway_cmd or (endpoint and (key or detected)):
         # 注意：这里必须把配置里的超时传下去。之前漏传，一直吃 20 秒默认值，
         # 换到 Qwen3.8-27B（比 4B 慢）+ vote=3 之后就会大面积 TimeoutError → 静默回落规则版。
         timeout = float((cfg or {}).get("timeout_seconds", 30) or 30)

@@ -121,19 +121,35 @@ python -m baselines.train --profile <A|B|C> \
 
 ## 5. 策略层
 
-- **镜像默认 `--policy auto`**（合规关键）：平台注入 PyTRiO 接入信息
-  （`SAMPLER_ENDPOINT/MODEL/API_KEY`、`PYTRIO_*`、`OPENAI_*` 等）时，自动改用
-  **`Qwen/Qwen3.8-27B`** 作"合规驱动模型"（赛题路线一）；未注入则回落确定性规则版，
-  以保证"无人干预跑完"这条硬门槛。
-- **模型降级链**：`Qwen/Qwen3.8-27B` → `Qwen/Qwen3.5-4B`。启动时用极小请求探测
-  （16 token / 15 秒）——实测 27B 端点拥塞时会整段 90 秒超时，不探测的话每窗白等一次超时，
-  最后全部 `rule(fallback)`。
+### 5.0 模型访问注入点（平台用 RPC 网关时的忠实接法）
+
+平台可能**不是**给 OpenAI 兼容 HTTP 端点，而是只暴露一个 host gateway / RPC 入口。
+为此我们提供了三个**由平台决定接线**的注入点，不替换传输语义、不改我们的调用协议：
+
+| 注入方式 | 环境变量 | 说明 |
+| --- | --- | --- |
+| **命令式网关**（最通用） | `HARNESS_LLM_CMD` | 指定一个命令：我们把**请求 JSON 写到它的 stdin**，从 **stdout 读回复 JSON**。回复可以是 `{"content":"..."}`、`{"choices":[{"message":{"content":"..."}}]}`、`{"text":...}`、`{"output":...}` 任一形状 |
+| **配置外置** | `HARNESS_LLM_CONFIG` | 指向一个 JSON：`{"endpoint"|"base_url"|"model_base_url", "model", "api_key"}` |
+| **端点改写** | `HARNESS_MODEL_BASE_URL` / `SAMPLER_BASE_URL` / `SAMPLER_ENDPOINT` / `PYTRIO_BASE_URL` / `OPENAI_BASE_URL` | OpenAI 兼容 HTTP 端点 |
+
+另有 `HARNESS_LLM_PROBE=0` 可跳过启动探测（平台已明确模型可用时省掉一跳）。
+
+**验证方式**（我们已自测通过）：把 `HARNESS_LLM_CMD` 指向任意满足上述 stdin/stdout 约定的命令，
+闭环决策来源会变成 `source=llm`，`model_used` 记录该模型，token 用量进 `decisions.jsonl`。
+
+- **镜像默认 `--policy auto`**：上述任一注入存在即启用 LLM；都没有 → 确定性规则版（保证跑完）。
+- **模型降级链**：`Qwen/Qwen3.8-27B` → `Qwen/Qwen3.5-4B`；启动探测 16 token / 15 秒。
 - 每窗决策记录 `source`（`llm` / `rule` / `rule(fallback)`）与 `model_used`，可自证合规。
 - 动作集合：`hold / recompute_stats / finetune_1ep / finetune_3ep / swap_candidate / rollback`。
-- **受控停更**：`config.policy.allow_update` 可按任务关闭更新。当前 `C=false` ——
-  平台实测 C 更新后 NASA 非对称分由 4.26e10 变为 7.65e10（变差），按"更新必须有依据"原则停更。
-- 守门余量（`gate.margin`，挑战者必须超过冠军这个幅度才上线）：
-  A=0.005（Macro-F1）、B=5.0（分钟）、C=0.5（循环）。
+- **受控停更**：`config.policy.allow_update`（当前 `C=false`，因其更新后 NASA 由 4.26e10 变差到 7.65e10）。
+- 守门余量：A=0.005（Macro-F1）、B=5.0（分钟）、C=0.5（循环）。
+
+### 5.0.1 时间预算注入点
+
+平台若给更紧的超时，可用环境变量覆盖配置上限（取两者较小值）：
+`HARNESS_MAX_SECONDS` / `HARNESS_MAX_WINDOWS` / `HARNESS_MAX_UPDATES` / `HARNESS_MAX_EPOCHS`。
+配合"兜底交付"，即使中途被平台超时打断，`/model/<TASK>/checkpoint.npz` 也已经在盘上。
+
 
 ## 5.1 实验台账（门槛 3 的直接证据）
 

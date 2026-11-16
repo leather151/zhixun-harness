@@ -225,6 +225,18 @@ def run(task, args, cfg):
     events = []
     t_start = time.monotonic()
     caps = dict(cfg["caps"])
+    # 平台可能给更紧的时间预算：HARNESS_MAX_SECONDS / HARNESS_MAX_WINDOWS 可覆盖配置上限，
+    # 避免整个闭环跑过平台侧超时（试运行阶段曾出现 HARNESS_TIMEOUT_INVALID）。
+    for env_name, cap_key, caster in (("HARNESS_MAX_SECONDS", "max_seconds", float),
+                                      ("HARNESS_MAX_WINDOWS", "max_windows", int),
+                                      ("HARNESS_MAX_UPDATES", "max_updates", int),
+                                      ("HARNESS_MAX_EPOCHS", "max_epochs", int)):
+        raw = os.environ.get(env_name)
+        if raw:
+            try:
+                caps[cap_key] = min(caps[cap_key], caster(raw))
+            except Exception:
+                pass
     caps["max_windows"] = min(caps["max_windows"], len(windows))
     margin = gate_margin(cfg, task)
 

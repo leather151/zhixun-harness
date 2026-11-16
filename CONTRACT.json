@@ -10,7 +10,9 @@
   "image": {
     "tag": "zhixun-harness:v6",
     "base": "python:3.12-slim",
-    "runtime_deps": ["numpy==1.26.4"],
+    "runtime_deps": [
+      "numpy==1.26.4"
+    ],
     "offline_safe": true,
     "cpu_only": true,
     "user": "runner",
@@ -25,19 +27,64 @@
       "selftest": "秒级自检 + 三包各 1 条真实样本推理，退出码 0=通过"
     },
     "cli": "python -u /app/harness/entry.py --task all|A|B|C --stream auto|official|train --windows N --policy auto|rule|llm --swan off --out /output [--previous DIR] [--model-out DIR]",
-    "default_cmd": ["--task", "all", "--stream", "train", "--windows", "4", "--policy", "rule", "--swan", "off", "--out", "/output"],
-    "exit_code": {"success": 0, "selftest_fail": 1, "note": "闭环即使因外部原因未跑成，只要交付产物已落盘也返回 0，失败原因写入 /model/<TASK>/manifest.json 的 failure 字段"}
+    "default_cmd": [
+      "--task",
+      "all",
+      "--stream",
+      "train",
+      "--windows",
+      "4",
+      "--policy",
+      "rule",
+      "--swan",
+      "off",
+      "--out",
+      "/output"
+    ],
+    "exit_code": {
+      "success": 0,
+      "selftest_fail": 1,
+      "note": "闭环即使因外部原因未跑成，只要交付产物已落盘也返回 0，失败原因写入 /model/<TASK>/manifest.json 的 failure 字段"
+    }
   },
   "tasks": {
-    "A": {"kind": "classification", "classes": ["Ethanol", "Ethylene", "Ammonia", "Acetaldehyde", "Acetone", "Toluene"], "n_features": 128, "primary_metric": "macro_f1", "checkpoint": "/app/models/A/checkpoint.npz"},
-    "B": {"kind": "regression", "unit": "minutes", "n_features": 34, "primary_metric": "rmse", "checkpoint": "/app/models/B/checkpoint.npz"},
-    "C": {"kind": "regression", "unit": "cycles", "n_features": 24, "primary_metric": "rmse", "checkpoint": "/app/models/C/checkpoint.npz"}
+    "A": {
+      "kind": "classification",
+      "classes": [
+        "Ethanol",
+        "Ethylene",
+        "Ammonia",
+        "Acetaldehyde",
+        "Acetone",
+        "Toluene"
+      ],
+      "n_features": 128,
+      "primary_metric": "macro_f1",
+      "checkpoint": "/app/models/A/checkpoint.npz"
+    },
+    "B": {
+      "kind": "regression",
+      "unit": "minutes",
+      "n_features": 34,
+      "primary_metric": "rmse",
+      "checkpoint": "/app/models/B/checkpoint.npz"
+    },
+    "C": {
+      "kind": "regression",
+      "unit": "cycles",
+      "n_features": 24,
+      "primary_metric": "rmse",
+      "checkpoint": "/app/models/C/checkpoint.npz"
+    }
   },
   "delivery_slot": {
     "path": "/app/models/<TASK>/checkpoint.npz",
     "why": "平台评测读这个文件名，并用它自己的 Model.predict(原始特征) 推理，不施加 metadata 里的预处理",
     "consequence": "交付位上的模型必须只依赖原始特征；依赖外部秩变换的模型（models/B/checkpoint_rank.npz, RMSE 369.47）只能作内部档案与蒸馏教师",
-    "archives": ["/app/models/<TASK>/checkpoint_official_baseline.npz", "/app/models/B/checkpoint_rank.npz"]
+    "archives": [
+      "/app/models/<TASK>/checkpoint_official_baseline.npz",
+      "/app/models/B/checkpoint_rank.npz"
+    ]
   },
   "predict": {
     "recommended": "HARNESS_MODE=serve python -u /app/harness/entry.py",
@@ -46,48 +93,150 @@
       "import_path": "baselines.predict",
       "callable": "predict(model, inputs) -> dict",
       "model_arg": "已加载的 Model 对象 / 检查点路径 / None（None=按输入自动识别任务）",
-      "helpers": ["load(task=None, checkpoint=None)", "predict_auto(inputs)"],
+      "helpers": [
+        "load(task=None, checkpoint=None)",
+        "predict_auto(inputs)"
+      ],
       "same_as": "官方 baseline 的 predict.py 签名；内部按特征 schema 自动识别 A/B/C，并施加检查点自带的预处理（B 包的秩变换）",
       "why_not_vendor_predict": "官方各包 predict.py 以顶层模块名 model 导入，同进程混用会互相污染；且不做 rank 预处理"
     },
-    "output": {"regression": "{\"outputs\": {\"value\": <float, >=0>}}", "classification": "{\"outputs\": [{\"label\": <class>, \"score\": <float>}, ...]}"}
+    "output": {
+      "regression": "{\"outputs\": {\"value\": <float, >=0>}}",
+      "classification": "{\"outputs\": [{\"label\": <class>, \"score\": <float>}, ...]}"
+    }
   },
   "train": {
     "contract_entry": {
       "command": "python -m baselines.train --profile <A|B|C> --train <jsonl> --validation <jsonl> --from-baseline <ckpt> --epochs N --output <new dir> --stage-id <id>",
-      "also_supports": ["--resume <ckpt>", "--learning-rate", "--batch-size", "--seed", "--recipe auto|plain|class_weight|distill|long_average", "--json"],
+      "also_supports": [
+        "--resume <ckpt>",
+        "--learning-rate",
+        "--batch-size",
+        "--seed",
+        "--recipe auto|plain|class_weight|distill|long_average",
+        "--json"
+      ],
       "module": "/app/baselines/train.py",
-      "outputs": ["<output>/checkpoint.npz", "<output>/training.json", "<output>/history.jsonl"],
-      "audit_fields": ["parent_checkpoint_sha256", "initial_steps", "final_steps", "initial_epochs", "final_epochs", "validation_before", "validation_after", "source_sha256"],
+      "outputs": [
+        "<output>/checkpoint.npz",
+        "<output>/training.json",
+        "<output>/history.jsonl"
+      ],
+      "audit_fields": [
+        "parent_checkpoint_sha256",
+        "initial_steps",
+        "final_steps",
+        "initial_epochs",
+        "final_epochs",
+        "validation_before",
+        "validation_after",
+        "source_sha256"
+      ],
       "recipes": {
         "A": "class_weight：按 sqrt 逆类频率复制行（等价于样本权重，id 改写留痕）",
         "B": "distill：用 /app/models/B/checkpoint_rank.npz 作教师，在真实+域内+偏移增强输入上蒸馏出只吃原始特征的学生",
         "C": "long_average：同初始化多轮训练（更多 epoch 近似权重平均）"
       },
-      "measured": {"A": {"before": 0.7140, "after": 0.7172, "metric": "macro_f1"},
-                   "B": {"before": 681.16, "after": 565.14, "metric": "rmse"},
-                   "C": {"before": 52.87, "after": 52.49, "metric": "rmse"}}
+      "measured": {
+        "A": {
+          "before": 0.714,
+          "after": 0.7172,
+          "metric": "macro_f1"
+        },
+        "B": {
+          "before": 681.16,
+          "after": 565.14,
+          "metric": "rmse"
+        },
+        "C": {
+          "before": 52.87,
+          "after": 52.49,
+          "metric": "rmse"
+        }
+      },
+      "note_generic": "若输入维度与 A/B/C 不符、或标签类型（分类/回归）与 profile 不符，自动切到通用通道：按输入结构自适应建网，不使用任何预训练权重"
     },
     "script": "/app/vendor/<TASK>/train.py",
     "callable": "train_run(profile, train_path, validation_path, output, resume=<parent ckpt>, epochs=N, learning_rate=lr, batch_size=bs, stage_id=s)",
     "cli": "无独立 CLI；由 /app/harness/runner.py 在闭环里调用（HARNESS_MODE=loop）",
-    "parent_checkpoint_candidates": ["/previous", "/previous/checkpoint.npz", "/previous/model/checkpoint.npz", "/previous/output/model/<TASK>/checkpoint.npz", "/previous/<TASK>/checkpoint.npz", "/previous/**/*.npz", "/app/models/<TASK>/<checkpoint>"],
+    "parent_checkpoint_candidates": [
+      "/previous",
+      "/previous/checkpoint.npz",
+      "/previous/model/checkpoint.npz",
+      "/previous/output/model/<TASK>/checkpoint.npz",
+      "/previous/<TASK>/checkpoint.npz",
+      "/previous/**/*.npz",
+      "/app/models/<TASK>/<checkpoint>"
+    ],
     "parent_resolution": "优先 --checkpoint；否则若 /previous（或 --previous / HARNESS_PREVIOUS 指定位置）下能找到该任务检查点就作 resume 父检查点；都找不到则用 /app/models/<TASK>/ 下 models/<TASK>/meta.json 里 default_checkpoint 指明的检查点；父检查点加载失败自动回落内置模型，不中断",
     "output_dir": "必须是新目录；每轮产物含 checkpoint.npz / training.json / history.jsonl",
-    "artifact": {"path": "/model/<TASK>/checkpoint.npz", "also_written_to": "/output/model/<TASK>/checkpoint.npz", "sidecar": "/model/<TASK>/manifest.json", "override": "--model-out / HARNESS_MODEL_OUT（不可写则只落 <out>/model）"},
+    "artifact": {
+      "path": "/model/<TASK>/checkpoint.npz",
+      "also_written_to": "/output/model/<TASK>/checkpoint.npz",
+      "sidecar": "/model/<TASK>/manifest.json",
+      "override": "--model-out / HARNESS_MODEL_OUT（不可写则只落 <out>/model）"
+    },
     "fallback_delivery": {
       "when": "入口启动时、以及闭环失败后",
       "what": "把镜像内 models/<TASK>/<default_checkpoint> 复制成 /model/<TASK>/checkpoint.npz + manifest.json（origin=bundled，failure=失败原因）",
       "why": "保证'不低于静态基线'不会因 /data 未挂载、数据为空、超预算、父检查点 schema 不符而变成 0 分"
     },
-    "manifest_keys": ["task", "kind", "origin", "checkpoint", "sha256", "parent_checkpoint", "parent_origin", "stream_mode", "policy", "primary", "metric_series", "promotions", "updates_used", "epochs_used", "training_seconds", "delivered", "failure"],
+    "manifest_keys": [
+      "task",
+      "kind",
+      "origin",
+      "checkpoint",
+      "sha256",
+      "parent_checkpoint",
+      "parent_origin",
+      "stream_mode",
+      "policy",
+      "primary",
+      "metric_series",
+      "promotions",
+      "updates_used",
+      "epochs_used",
+      "training_seconds",
+      "delivered",
+      "failure"
+    ],
     "evidence_per_run": "/output/<task>-<stream>-<timestamp>/{windows.jsonl,decisions.jsonl,report.md,summary.json}",
-    "constraints": {"max_params": 100000, "hidden_width_immutable_on_resume": true, "seed_immutable_on_resume": true}
+    "constraints": {
+      "max_params": 100000,
+      "hidden_width_immutable_on_resume": true,
+      "seed_immutable_on_resume": true
+    }
   },
   "checkpoints": {
     "format": "contest.cpu-mlp.v1 (zip of .npy + metadata JSON)",
-    "arrays": ["w1", "b1", "w2", "b2", "adam_first_*", "adam_second_*", "mean", "scale", "metadata"],
-    "metadata_keys": ["format", "task", "profile", "paths", "classes", "hidden", "seed", "epochs", "steps", "learning_rate", "batch_size", "parameter_count", "target_mean", "target_scale", "preprocess"],
+    "arrays": [
+      "w1",
+      "b1",
+      "w2",
+      "b2",
+      "adam_first_*",
+      "adam_second_*",
+      "mean",
+      "scale",
+      "metadata"
+    ],
+    "metadata_keys": [
+      "format",
+      "task",
+      "profile",
+      "paths",
+      "classes",
+      "hidden",
+      "seed",
+      "epochs",
+      "steps",
+      "learning_rate",
+      "batch_size",
+      "parameter_count",
+      "target_mean",
+      "target_scale",
+      "preprocess"
+    ],
     "preprocess_kinds": {
       "none": "无（metadata 里无 preprocess 键）",
       "rank": "metadata.preprocess = {kind:'rank', n_quantiles, quantiles}：推理前必须先把原始特征映射为该分位表的分位数",
@@ -102,11 +251,40 @@
     "llm_optional": {
       "enabled_when": "存在 SAMPLER_ENDPOINT/PYTRIO_BASE_URL/OPENAI_BASE_URL 等环境变量，且 HARNESS_MODE=loop",
       "model": "Qwen/Qwen3.5-4B via PyTRiO OpenAI-compatible /api/openai/v1",
-      "request_extras": ["enable_thinking: false", "n: 3 (self-consistency vote)"],
+      "request_extras": [
+        "enable_thinking: false",
+        "n: 3 (self-consistency vote)"
+      ],
       "fallback": "任何异常都回落 rule 并记录 source=rule(fallback)"
     },
-    "actions": ["hold", "recompute_stats", "finetune_1ep", "finetune_3ep", "swap_candidate", "rollback"],
-    "gate_margin": {"A": 0.005, "B": 5.0, "C": 0.5, "default": 0.0, "note": "挑战者必须超过冠军这个幅度才上线，守住'不低于静态基线'"}
+    "actions": [
+      "hold",
+      "recompute_stats",
+      "finetune_1ep",
+      "finetune_3ep",
+      "swap_candidate",
+      "rollback"
+    ],
+    "gate_margin": {
+      "A": 0.005,
+      "B": 5.0,
+      "C": 0.5,
+      "default": 0.0,
+      "note": "挑战者必须超过冠军这个幅度才上线，守住'不低于静态基线'"
+    },
+    "model_access_injection": {
+      "HARNESS_LLM_CMD": "命令式网关：请求 JSON 写 stdin，回复 JSON 读 stdout；支持 {content} / {choices[].message.content} / {text} / {output} 形状（我们已自测 source=llm）",
+      "HARNESS_LLM_CONFIG": "JSON 文件：{endpoint|base_url|model_base_url, model, api_key}",
+      "endpoint_env": [
+        "HARNESS_MODEL_BASE_URL",
+        "SAMPLER_BASE_URL",
+        "SAMPLER_ENDPOINT",
+        "PYTRIO_BASE_URL",
+        "OPENAI_BASE_URL"
+      ],
+      "HARNESS_LLM_PROBE": "0 = 跳过启动探测（平台已明确模型可用时）",
+      "note": "任一注入存在即启用 LLM；都没有则规则版兜底，保证无人干预跑完。不替换传输语义、不改调用协议。"
+    }
   },
   "data": {
     "env": "HARNESS_DATA",
@@ -116,8 +294,20 @@
   },
   "limits": {
     "config": "/app/harness/config.json",
-    "caps": ["max_updates", "max_epochs", "max_seconds", "max_windows"],
-    "note": "硬上限，触发即停并写入 events"
+    "caps": [
+      "max_updates",
+      "max_epochs",
+      "max_seconds",
+      "max_windows"
+    ],
+    "note": "硬上限，触发即停并写入 events",
+    "budget_env": [
+      "HARNESS_MAX_SECONDS",
+      "HARNESS_MAX_WINDOWS",
+      "HARNESS_MAX_UPDATES",
+      "HARNESS_MAX_EPOCHS"
+    ],
+    "budget_note": "与 config.caps 取较小值；配合兜底交付，即使被平台超时打断也已产出 /model/<TASK>/checkpoint.npz"
   },
   "compliance": {
     "validation_only_for_measurement": true,
