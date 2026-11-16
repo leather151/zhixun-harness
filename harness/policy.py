@@ -116,7 +116,7 @@ class LLMPolicy:
     name = "llm"
 
     def __init__(self, endpoint, model, api_key=None, timeout=20.0, cfg=None,
-                 enable_thinking=False, max_tokens=128, vote=1):
+                 enable_thinking=False, max_tokens=128, vote=1, model_chain=None):
         self.endpoint = endpoint.rstrip("/")
         self.model = model
         self.api_key = api_key or _default_key()
@@ -130,6 +130,48 @@ class LLMPolicy:
         self.max_tokens = max_tokens
         # vote>1：用 OpenAI 的 n 参数一次取多个候选做多数投票（小模型提稳的常用手段）
         self.vote = max(1, int(vote))
+        # 主模型 + 备选模型链。实测 Qwen3.8-27B 会整段 90 s 超时（端点拥塞），
+        # 而 Qwen3.5-4B 是 0.3 s —— 所以要能自动降级，而不是每窗白等一个超时。
+        chain = [model] if model_chain is None else [m for m in model_chain if m]
+        if model and model not in chain:
+            chain.insert(0, model)
+        self.model_chain = chain
+        self.active_model = None          # 探测后确定；None 表示还没探测
+        self.probe_note = None
+
+    # ---------------------------------------------------------------- 探测
+    def _probe(self):
+        """用一次极小的请求确认哪个模型可用，避免每个窗口都白等超时。"""
+        if self.active_model is not None:
+            return self.active_model
+        old_timeout = self.timeout
+        self.timeout = min(15.0, old_timeout)
+        try:
+            for cand in self.model_chain:
+                body = json.dumps({
+                    "model": cand,
+                    "messages": [{"role": "user", "content": "只输出 {\"action\":\"hold\"}"}],
+                    "max_tokens": 16, "temperature": 0,
+                }).encode("utf-8")
+                if self.enable_thinking is not None:
+                    try:
+                        body = json.dumps({**json.loads(body),
+                                           "enable_thinking": self.enable_thinking}).encode("utf-8")
+                    except Exception:                         # noqa: BLE001
+                        pass
+                try:
+                    status, text = self._post(body)
+                    if status == 200:
+                        self.active_model = cand
+                        self.probe_note = f"probe ok: {cand}"
+                        return cand
+                    self.probe_note = f"probe {cand} -> HTTP {status}"
+                except Exception as exc:                      # noqa: BLE001
+                    self.probe_note = f"probe {cand} -> {type(exc).__name__}"
+            self.active_model = ""        # 全挂
+            return ""
+        finally:
+            self.timeout = old_timeout
 
     # ---------------------------------------------------------------- HTTP
     def _post(self, body):
@@ -148,8 +190,15 @@ class LLMPolicy:
             return exc.code, exc.read().decode("utf-8", "replace")[:400]
 
     def __call__(self, state, caps):
+        active = self._probe()
+        if not active:
+            result = self.fallback(state, caps)
+            result["source"] = "rule(fallback)"
+            result["fallback_reason"] = self.probe_note or "no reachable model"
+            return result
+        self.model = active
         payload = {
-            "model": self.model,
+            "model": active,
             "temperature": 0 if self.vote <= 1 else 0.6,
             "max_tokens": self.max_tokens,
             "messages": [
@@ -210,7 +259,8 @@ class LLMPolicy:
             return {"action": action,
                     "reason": f"LLM 决策（{consensus}/{len(actions)} 票一致）",
                     "source": self.name, "llm_raw": raw_all[0],
-                    "votes": actions, "usage": data.get("usage")}
+                    "votes": actions, "usage": data.get("usage"),
+                    "model_used": active}
         except Exception as exc:                                    # noqa: BLE001
             out = self.fallback(state, caps)
             out.update({"source": "rule(fallback)", "fallback": True,
@@ -253,8 +303,16 @@ def build(kind, cfg, endpoint=None, model=None, api_key=None,
     model = model or default_model
     key = api_key or _default_key()
     if endpoint and (key or detected):
+        # 注意：这里必须把配置里的超时传下去。之前漏传，一直吃 20 秒默认值，
+        # 换到 Qwen3.8-27B（比 4B 慢）+ vote=3 之后就会大面积 TimeoutError → 静默回落规则版。
+        timeout = float((cfg or {}).get("timeout_seconds", 30) or 30)
+        # 备选模型链：27B 端点拥塞时会整段 90 s 超时（实测），必须能自动降级到 4B，
+        # 否则每个窗口都白等一次超时，最后全都rule(fallback)。
+        fallbacks = list((cfg or {}).get("fallback_models") or [])
+        chain = ([model] + fallbacks) if model else (fallbacks or None)
         pol = LLMPolicy(endpoint, model or "qwen", api_key=api_key, cfg=cfg,
-                        enable_thinking=enable_thinking, vote=vote)
+                        timeout=timeout, enable_thinking=enable_thinking, vote=vote,
+                        model_chain=chain)
         if detected:
             pol.detected_env = detected["source"]
         elif default_endpoint and endpoint == default_endpoint:
