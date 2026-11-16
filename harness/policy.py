@@ -58,6 +58,31 @@ class RulePolicy:
     def __init__(self, cfg):
         self.cfg = cfg
 
+    def chat_text(self, system, user, max_tokens=None):
+        """通用对话：给 system+user，返回纯文本。供 agent 层提出"实验规格"用。"""
+        active = self._probe()
+        if not active:
+            raise RuntimeError(self.probe_note or "no reachable model")
+        payload = {
+            "model": active,
+            "temperature": 0,
+            "max_tokens": int(max_tokens or self.max_tokens),
+            "messages": [{"role": "system", "content": system},
+                         {"role": "user", "content": user}],
+        }
+        if self.enable_thinking is not None:
+            payload["enable_thinking"] = bool(self.enable_thinking)
+        status, text = self._post(json.dumps(payload).encode("utf-8"))
+        if status != 200:
+            raise RuntimeError(f"HTTP {status}: {text[:200]}")
+        data = json.loads(text)
+        message = ((data.get("choices") or [{}])[0] or {}).get("message") or {}
+        return (message.get("content") or message.get("reasoning")
+                or message.get("reasoning_content") or "").strip()
+
+    # agent 层用同一入口：它只关心"模型回的文本"
+    chat_json = chat_text
+
     def __call__(self, state, caps):
         c = self.cfg
         if caps.get("updates_left", 0) <= 0 or caps.get("epochs_left", 0) <= 0:
@@ -241,6 +266,31 @@ class LLMPolicy:
                     "content": str(data["data"].get("content") or data["data"].get("text") or "")}}],
                     "usage": data["data"].get("usage")})
         return 200, text
+
+    def chat_text(self, system, user, max_tokens=None):
+        """通用对话：给 system+user，返回纯文本。供 agent 层提出"实验规格"用。"""
+        active = self._probe()
+        if not active:
+            raise RuntimeError(self.probe_note or "no reachable model")
+        payload = {
+            "model": active,
+            "temperature": 0,
+            "max_tokens": int(max_tokens or self.max_tokens),
+            "messages": [{"role": "system", "content": system},
+                         {"role": "user", "content": user}],
+        }
+        if self.enable_thinking is not None:
+            payload["enable_thinking"] = bool(self.enable_thinking)
+        status, text = self._post(json.dumps(payload).encode("utf-8"))
+        if status != 200:
+            raise RuntimeError(f"HTTP {status}: {text[:200]}")
+        data = json.loads(text)
+        message = ((data.get("choices") or [{}])[0] or {}).get("message") or {}
+        return (message.get("content") or message.get("reasoning")
+                or message.get("reasoning_content") or "").strip()
+
+    # agent 层用同一入口：它只关心"模型回的文本"
+    chat_json = chat_text
 
     def __call__(self, state, caps):
         active = self._probe()

@@ -1,5 +1,9 @@
 {
     "_说明":  "策略阈值与硬性预算上限。阈值来自 03_实验/数据分析 的漂移标定（A 包 b01→b02：KS 中位数 0.283、|z| 中位数 0.544）。",
+    "agent":  {
+                  "enabled":  false,
+                  "_enable_说明":  "开启后 finetune 类动作改走 Agent 通道：大模型读历史 -> 输出受白名单约束的实验规格(recipe/epochs/lr/batch) -> 调用 python -m baselines.train 当工具执行 -> 候选仍交守门。默认关闭以保持已被平台验证的行为；可用 --agent on 临时开启。"
+              },
     "policy":  {
                    "ks_median_trigger":  0.25,
                    "abs_z_median_trigger":  0.50,

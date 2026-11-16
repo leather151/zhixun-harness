@@ -320,6 +320,52 @@ def run(task, args, cfg):
 
         # ---- 5. 执行 ----
         executed = None
+        agent_trace = None
+        # Agent 通道（可选，config.agent.enabled）：让大模型"读历史→提实验规格→用工具执行"，
+        # 这是赛题所说"Harness 调用大模型读写代码、使用工具"的落地；
+        # 规格受白名单约束（recipes/epochs/lr/batch），不执行模型写的任意代码。
+        use_agent = bool((cfg.get("agent") or {}).get("enabled")) and action.startswith("finetune")
+        if use_agent and caps_live["epochs_left"] > 0:
+            try:
+                import agent as AG
+                T.write_buffer(buffer_path, history, *windows[:index + 1],
+                               table=T.model_table(T.load_model(task, current)))
+                cand_dir = outdir / f"agent-w{index + 1}"
+                agent_spec, raw = AG.propose(args._policy, task, state, ledger)
+                if agent_spec:
+                    t0 = time.monotonic()
+                    ok, report, spent = AG.run_tool(
+                        task, agent_spec, current, buffer_path, official_val, cand_dir,
+                        f"agent-w{index + 1}")
+                    training_seconds += time.monotonic() - t0
+                    if ok:
+                        updates_used += 1
+                        epochs_used += int(agent_spec["epochs"])
+                        pending = {"ckpt": str(cand_dir / "checkpoint.npz"),
+                                   "action": "agent_spec", "at": index}
+                        executed = {"action": "agent_spec", "spec": agent_spec,
+                                    "epochs": int(agent_spec["epochs"]),
+                                    "seconds": spent,
+                                    "steps": [report["initial_steps"], report["final_steps"]],
+                                    "parent_sha256": report.get("parent_checkpoint_sha256"),
+                                    "candidate_sha256": report.get("checkpoint_sha256"),
+                                    "candidate_val": report["validation_after"]}
+                        agent_trace = {"proposal_raw": raw, "applied_spec": agent_spec,
+                                       "tool": "python -m baselines.train",
+                                       "tool_ok": True, "seconds": spent}
+                    else:
+                        agent_trace = {"proposal_raw": raw, "applied_spec": agent_spec,
+                                       "tool": "python -m baselines.train",
+                                       "tool_ok": False, "error": str(report)[:300]}
+                        executed = {"action": "agent_spec", "failed": str(report)[:200]}
+                else:
+                    agent_trace = {"proposal_raw": raw, "applied_spec": None,
+                                   "tool_ok": False, "error": "spec rejected or unavailable"}
+            except Exception as exc:                      # noqa: BLE001
+                agent_trace = {"tool_ok": False,
+                               "error": f"{type(exc).__name__}: {exc}"[:200]}
+        if use_agent and (executed is None or executed.get("failed")):
+            use_agent = False        # 回落原有细调路径
         if action == "rollback":
             if len(ckpt_stack) > 1:
                 ckpt_stack.pop()
@@ -328,7 +374,7 @@ def run(task, args, cfg):
                 candidate_regressed = False
             else:
                 executed = {"action": "rollback", "skipped": "已在最初始检查点"}
-        elif action.startswith("finetune"):
+        elif action.startswith("finetune") and not (executed or {}).get("action") == "agent_spec":
             epochs = cfg["finetune"]["epochs_light"] if action == "finetune_1ep" else \
                 cfg["finetune"]["epochs_heavy"]
             epochs = int(min(epochs, caps_live["epochs_left"]))
@@ -602,6 +648,8 @@ def parse(argv=None):
     ap.add_argument("--stream", default="official", choices=["official", "train", "auto"],
                     help="official=官方验证集只测不改；train=train 内部切分（可更新）；auto=按数据自动选")
     ap.add_argument("--windows", type=int, default=4, help="把数据流切成几个窗口")
+    ap.add_argument("--agent", default="auto", choices=["auto", "on", "off"],
+                    help="on=让大模型提出实验规格并由 baselines.train 执行（Agent 通道）")
     ap.add_argument("--policy", default="auto", choices=["auto", "rule", "llm"],
                     help="auto=有 LLM 接入就用 LLM（失败回落规则），没有就用规则；rule=纯规则；llm=强制 LLM")
     ap.add_argument("--llm-endpoint", default=None)
@@ -658,6 +706,8 @@ def main(argv=None):
             raise SystemExit(f"以下任务失败：{bad}")
         return codes
     cfg = json.loads(Path(args.config).read_text(encoding="utf-8"))
+    if args.agent != "auto":
+        cfg.setdefault("agent", {})["enabled"] = (args.agent == "on")
     llm_cfg = cfg.get("llm", {}) or {}
     args._policy = P.build(args.policy, cfg["policy"], args.llm_endpoint, args.llm_model,
                            args.llm_key,
