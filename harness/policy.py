@@ -122,7 +122,7 @@ def _default_key():
     """取 API Key：环境变量优先，其次工程根目录的 .env.local（该文件已被 gitignore）。"""
     import os
     from pathlib import Path
-    for name in ("PYTRIO_API_KEY", "SAMPLER_API_KEY", "OPENAI_API_KEY"):
+    for name in ("PETRIO_API_KEY", "PYTRIO_API_KEY", "SAMPLER_API_KEY", "OPENAI_API_KEY"):
         value = os.environ.get(name)
         if value and value.strip():
             return value.strip()
@@ -450,6 +450,9 @@ def build(kind, cfg, endpoint=None, model=None, api_key=None,
 _ENV_PAIRS = (
     ("SAMPLER_ENDPOINT", "SAMPLER_MODEL", "SAMPLER_API_KEY"),
     ("HARNESS_LLM_ENDPOINT", "HARNESS_LLM_MODEL", "HARNESS_LLM_KEY"),
+    # 平台/官方镜像用的拼写是 PETRIO_*（少一个 Y），必须一并识别，否则平台注入了我们也读不到
+    ("PETRIO_BASE_URL", "PETRIO_MODEL", "PETRIO_API_KEY"),
+    ("PETRIO_ENDPOINT", "PETRIO_MODEL", "PETRIO_API_KEY"),
     ("PYTRIO_BASE_URL", "PYTRIO_MODEL", "PYTRIO_API_KEY"),
     ("OPENAI_BASE_URL", "OPENAI_MODEL", "OPENAI_API_KEY"),
     ("LLM_BASE_URL", "LLM_MODEL", "LLM_API_KEY"),

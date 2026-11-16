@@ -1,0 +1,17 @@
+{
+  "profile": "C",
+  "task": "regression",
+  "classes": [],
+  "hidden": 32,
+  "seed": 42,
+  "learning_rate": 0.002,
+  "batch_size": 256,
+  "epochs": 15,
+  "history_window": 6,
+  "tuning": {
+    "full_hist":   {"epochs": 6, "learning_rate": 0.0012},
+    "recent_double": {"epochs": 5, "learning_rate": 0.0012},
+    "low_lr_long": {"epochs": 10, "learning_rate": 0.0004},
+    "drift_focus": {"epochs": 6, "learning_rate": 0.0018}
+  }
+}
