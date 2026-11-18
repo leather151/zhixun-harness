@@ -25,3 +25,7 @@ src/swanlog/
 .trio-env/
 # SAM 权重只存在 PyTRiO 云端；sft 语料（154 KB）入库作为可审计证据
 
+# 组委会提供的参考实现 / SDK 解包（仅供本地阅读，不随仓库分发）
+reference/
+# 离线 wheel 缓存（体积大，重建见 dist/ 说明）
+wheelhouse/
