@@ -29,3 +29,5 @@ src/swanlog/
 reference/
 # 离线 wheel 缓存（体积大，重建见 dist/ 说明）
 wheelhouse/
+# 镜像 tar 不进 git（90MB+，走平台上传或 Release 附件）
+*.tar

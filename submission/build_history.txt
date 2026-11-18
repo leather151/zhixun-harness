@@ -1,0 +1,18 @@
+﻿# 构建历史（来自镜像 config，created: 2026-11-17T00:20:52Z）
+# 后半 5 步是我们加的层；前面是组委会 image6 底座自带
+
+# ---- 组委会 image6 底座（节选）----
+RUN /bin/sh -c pip install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ -r requirements.txt
+COPY baselines/ ./baselines/
+COPY configs/ ./configs/
+COPY engine.py main.py pytrio_tools.py bearing_gate.py ./
+ENV SWANLAB_MODE=cloud SWANLAB_PROJECT_NAME=smart-training-harness PYTHONUTF8=1
+ENTRYPOINT ["python", "main.py"]
+WORKDIR /app
+
+# ---- 我们加的层 ----
+ADD sdk.tar.gz /opt/
+RUN /bin/sh -c python3 -c "import sysconfig,shutil; shutil.copytree('/opt/contest-harness-sdk-1.0.2/contest_harness', sysconfig.get_paths()['purelib'] + '/contest_harness')"
+COPY contest_submission.py /app/contest_submission.py
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+ENTRYPOINT ["python3", "/app/harness.py"]
